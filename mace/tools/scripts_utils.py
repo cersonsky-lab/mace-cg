@@ -958,6 +958,11 @@ def get_params_options(
             logging.info("Freezing embedding weights")
             lr_params_factors["embedding_lr_factor"] = 0.0
             freeze_module(model.node_embedding, True)
+            if (
+                hasattr(model, "inertia_node_embedding")
+                and model.inertia_node_embedding is not None
+            ):
+                freeze_module(model.inertia_node_embedding, True)
 
     param_options = dict(
         params=[
@@ -996,6 +1001,19 @@ def get_params_options(
         amsgrad=args.amsgrad,
         betas=(args.beta, 0.999),
     )
+    if (
+        hasattr(model, "inertia_node_embedding")
+        and model.inertia_node_embedding is not None
+    ):
+        param_options["params"].append(
+            {
+                "name": "inertia_node_embedding",
+                "params": model.inertia_node_embedding.parameters(),
+                "weight_decay": 0.0,
+                "lr": lr_params_factors.get("embedding_lr_factor", 1.0) * args.lr,
+            }
+        )
+
     # Optional submodules that only exist on some model classes (joint
     # embeddings, MACELES, PolarMACE). Each gets its own named group so that
     # every trainable parameter is registered explicitly; weight decay stays
