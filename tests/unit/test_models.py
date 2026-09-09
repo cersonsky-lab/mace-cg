@@ -771,3 +771,87 @@ def test_non_linear_first_interaction_block_cannot_be_torchscripted():
 
     # the same model with the default first block scripts without complaint
     assert jit.compile(modules.ScaleShiftMACE(**_energy_model_config())) is not None
+
+
+@pytest.mark.parametrize(
+    "rigid_feature_mode,rigid_pair_mode,rigid_pair_multiplicity",
+    [
+        ("moi", "none", 1),
+        ("none", "full_frame", 2),
+        ("moi", "full_frame", 1),
+        ("moi", "full_frame_compact", 1),
+    ],
+)
+def test_rigid_modes_survive_model_config_round_trip(
+    rigid_feature_mode,
+    rigid_pair_mode,
+    rigid_pair_multiplicity,
+):
+    """Rigid architecture settings must survive extract/rebuild.
+
+    extract_model() is used by calculator compilation and several conversion
+    paths.  Dropping these settings would silently reconstruct a rigid model
+    as ordinary MACE because the constructor defaults are all non-rigid.
+    """
+
+    model = modules.ScaleShiftMACE(
+        **_energy_model_config(
+            max_ell=2,
+            hidden_irreps=o3.Irreps(
+                "8x0e + 8x1o + 8x2e"
+            ),
+            rigid_feature_mode=rigid_feature_mode,
+            rigid_pair_mode=rigid_pair_mode,
+            rigid_pair_multiplicity=rigid_pair_multiplicity,
+        )
+    )
+
+    extracted = tools.scripts_utils.extract_config_mace_model(model)
+
+    assert extracted["rigid_feature_mode"] == rigid_feature_mode
+    assert extracted["rigid_pair_mode"] == rigid_pair_mode
+    assert (
+        extracted["rigid_pair_multiplicity"]
+        == rigid_pair_multiplicity
+    )
+
+    rebuilt = tools.scripts_utils.extract_model(model)
+
+    assert rebuilt.rigid_feature_mode == rigid_feature_mode
+    assert rebuilt.rigid_pair_mode == rigid_pair_mode
+    assert (
+        rebuilt.rigid_pair_multiplicity
+        == rigid_pair_multiplicity
+    )
+
+    # The reconstructed architecture should contain exactly the same
+    # state-dict entries. This catches silently omitted rigid submodules.
+    assert set(rebuilt.state_dict()) == set(model.state_dict())
+
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(
+            rebuilt.state_dict()[name],
+            value,
+        )
+
+
+def test_rigid_pair_multiplicity_survives_json_config_round_trip():
+    model = modules.ScaleShiftMACE(
+        **_energy_model_config(
+            max_ell=2,
+            hidden_irreps=o3.Irreps(
+                "8x0e + 8x1o + 8x2e"
+            ),
+            rigid_pair_mode="full_frame",
+            rigid_pair_multiplicity=2,
+        )
+    )
+
+    config = tools.scripts_utils.extract_config_mace_model(model)
+    config = tools.scripts_utils.convert_to_json_format(config)
+    config = tools.scripts_utils.convert_from_json_format(config)
+
+    assert config["rigid_feature_mode"] == "none"
+    assert config["rigid_pair_mode"] == "full_frame"
+    assert config["rigid_pair_multiplicity"] == 2
+    assert isinstance(config["rigid_pair_multiplicity"], int)
