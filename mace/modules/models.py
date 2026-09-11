@@ -13,7 +13,11 @@ from e3nn import o3
 from e3nn.util.jit import compile_mode
 
 from mace.data.rigid_body import (
+    cartesian_tensor_to_irreps,
     inertia_edge_invariants,
+    infinitesimal_rotate_quaternions,
+    infinitesimal_rotate_tensor,
+    quadrupole_tensor_to_irreps,
 )
 from mace.data.rigid_features import validate_rigid_feature_mode
 from mace.modules.embeddings import GenericJointEmbedding
@@ -48,6 +52,7 @@ from .utils import (
     compute_dielectric_gradients,
     compute_fixed_charge_dipole,
     compute_fixed_charge_dipole_polar,
+    compute_torques,
     get_atomic_virials_stresses,
     get_edge_vectors_and_lengths,
     get_outputs,
@@ -544,6 +549,7 @@ class MACE(torch.nn.Module):
         compute_edge_forces: bool = False,
         compute_atomic_stresses: bool = False,
         lammps_mliap: bool = False,
+        compute_torque: bool = False,
     ) -> Dict[str, Optional[torch.Tensor]]:
         # Setup
         ctx = prepare_graph(
@@ -567,6 +573,15 @@ class MACE(torch.nn.Module):
         lammps_natoms = interaction_kwargs.lammps_natoms
         lammps_class = interaction_kwargs.lammps_class
 
+        if compute_torque and is_lammps:
+            raise ValueError(
+                "Torque autodiff is not supported in lammps_mliap mode"
+            )
+
+        rotation_vectors = torch.zeros_like(positions)
+        if compute_torque:
+            rotation_vectors.requires_grad_(True)
+
         # Atomic energies
         node_e0 = self.atomic_energies_fn(data["node_attrs"])[
             num_atoms_arange, node_heads
@@ -584,6 +599,39 @@ class MACE(torch.nn.Module):
         else:
             rigid_tensor = data[self.rigid_tensor_key]
             rigid_irreps = data[self.rigid_irreps_key]
+
+            if compute_torque:
+                # AtomicData contains the already-rotated lab-frame tensor.
+                #
+                # Preserve its exact existing forward value, while grafting
+                # onto it the derivative with respect to an infinitesimal
+                # physical rotation.  This is important because AtomicData
+                # may have constructed rigid_irreps at a different dtype
+                # before the batch was converted for model evaluation.
+                rotated_tensor = infinitesimal_rotate_tensor(
+                    rigid_tensor,
+                    rotation_vectors,
+                )
+                rigid_tensor = rigid_tensor + (
+                    rotated_tensor - rotated_tensor.detach()
+                )
+
+                if self.rigid_feature_mode == "electrostatic_quadrupole":
+                    rotated_irreps = quadrupole_tensor_to_irreps(
+                        rotated_tensor
+                    )
+                else:
+                    rotated_irreps = cartesian_tensor_to_irreps(
+                        rotated_tensor
+                    )
+
+                # Same straight-through construction for the irreps:
+                # numerically use the original AtomicData value, but take
+                # d/dtheta from the freshly rotated representation.
+                rigid_irreps = rigid_irreps + (
+                    rotated_irreps - rotated_irreps.detach()
+                )
+
             edge_invariant_tensor = rigid_tensor
             inertia_scalar = rigid_irreps[:, :1]
             inertia_tensor_irreps = rigid_irreps[:, 1:]
@@ -604,12 +652,19 @@ class MACE(torch.nn.Module):
             node_feats = node_feats + inertia_node_feats
         edge_attrs = self.spherical_harmonics(vectors)
         if self.use_rigid_pair_features:
+            pair_quaternions = data["quaternions"]
+
+            if compute_torque:
+                pair_quaternions = infinitesimal_rotate_quaternions(
+                    pair_quaternions,
+                    rotation_vectors,
+                )
             if self.rigid_pair_mode in (
                 "full_frame_compact",
                 "d6_frame_compact",
             ):
                 rigid_pair_edge_attrs = self.rigid_pair_edge_embedding(
-                    data["quaternions"],
+                    pair_quaternions,
                     data["edge_index"],
                     vectors,
                 )
@@ -623,7 +678,7 @@ class MACE(torch.nn.Module):
                 "d6_frame",
             ):
                 rigid_pair_edge_attrs = self.rigid_pair_edge_embedding(
-                    data["quaternions"],
+                    pair_quaternions,
                     data["edge_index"],
                     vectors,
                 )
@@ -642,7 +697,7 @@ class MACE(torch.nn.Module):
             if self.rigid_pair_mode == "invariant_radial":
                 edge_feats = self.rigid_pair_radial_conditioning(
                     edge_feats=edge_feats,
-                    quaternions=data["quaternions"],
+                    quaternions=pair_quaternions,
                     edge_index=data["edge_index"],
                     edge_vectors=vectors,
                 )
@@ -732,6 +787,22 @@ class MACE(torch.nn.Module):
         node_energy = torch.sum(torch.stack(node_energies_list, dim=-1), dim=-1)
         node_feats_out = torch.cat(node_feats_concat, dim=-1)
 
+        torques: Optional[torch.Tensor] = None
+        if compute_torque:
+            torques = compute_torques(
+                energy=total_energy,
+                rotation_vectors=rotation_vectors,
+                training=training,
+                retain_graph=(
+                    compute_force
+                    or compute_virials
+                    or compute_stress
+                    or compute_hessian
+                    or compute_edge_forces
+                    or compute_atomic_stresses
+                ),
+            )
+
         forces, virials, stress, hessian, edge_forces, _ = get_outputs(
             energy=total_energy,
             positions=positions,
@@ -764,6 +835,7 @@ class MACE(torch.nn.Module):
             "node_energy": node_energy,
             "contributions": contributions,
             "forces": forces,
+            "torques": torques,
             "edge_forces": edge_forces,
             "virials": virials,
             "stress": stress,
@@ -807,6 +879,7 @@ class ScaleShiftMACE(MACE):
         compute_edge_forces: bool = False,
         compute_atomic_stresses: bool = False,
         lammps_mliap: bool = False,
+        compute_torque: bool = False,
     ) -> Dict[str, Optional[torch.Tensor]]:
         # Setup
         ctx = prepare_graph(
@@ -831,6 +904,15 @@ class ScaleShiftMACE(MACE):
         lammps_natoms = interaction_kwargs.lammps_natoms
         lammps_class = interaction_kwargs.lammps_class
 
+        if compute_torque and is_lammps:
+            raise ValueError(
+                "Torque autodiff is not supported in lammps_mliap mode"
+            )
+
+        rotation_vectors = torch.zeros_like(positions)
+        if compute_torque:
+            rotation_vectors.requires_grad_(True)
+
         # Atomic energies
         node_e0 = self.atomic_energies_fn(data["node_attrs"])[
             num_atoms_arange, node_heads
@@ -849,6 +931,39 @@ class ScaleShiftMACE(MACE):
         else:
             rigid_tensor = data[self.rigid_tensor_key]
             rigid_irreps = data[self.rigid_irreps_key]
+
+            if compute_torque:
+                # AtomicData contains the already-rotated lab-frame tensor.
+                #
+                # Preserve its exact existing forward value, while grafting
+                # onto it the derivative with respect to an infinitesimal
+                # physical rotation.  This is important because AtomicData
+                # may have constructed rigid_irreps at a different dtype
+                # before the batch was converted for model evaluation.
+                rotated_tensor = infinitesimal_rotate_tensor(
+                    rigid_tensor,
+                    rotation_vectors,
+                )
+                rigid_tensor = rigid_tensor + (
+                    rotated_tensor - rotated_tensor.detach()
+                )
+
+                if self.rigid_feature_mode == "electrostatic_quadrupole":
+                    rotated_irreps = quadrupole_tensor_to_irreps(
+                        rotated_tensor
+                    )
+                else:
+                    rotated_irreps = cartesian_tensor_to_irreps(
+                        rotated_tensor
+                    )
+
+                # Same straight-through construction for the irreps:
+                # numerically use the original AtomicData value, but take
+                # d/dtheta from the freshly rotated representation.
+                rigid_irreps = rigid_irreps + (
+                    rotated_irreps - rotated_irreps.detach()
+                )
+
             edge_invariant_tensor = rigid_tensor
             inertia_scalar = rigid_irreps[:, :1]
             inertia_tensor_irreps = rigid_irreps[:, 1:]
@@ -869,12 +984,19 @@ class ScaleShiftMACE(MACE):
             node_feats = node_feats + inertia_node_feats
         edge_attrs = self.spherical_harmonics(vectors)
         if self.use_rigid_pair_features:
+            pair_quaternions = data["quaternions"]
+
+            if compute_torque:
+                pair_quaternions = infinitesimal_rotate_quaternions(
+                    pair_quaternions,
+                    rotation_vectors,
+                )
             if self.rigid_pair_mode in (
                 "full_frame_compact",
                 "d6_frame_compact",
             ):
                 rigid_pair_edge_attrs = self.rigid_pair_edge_embedding(
-                    data["quaternions"],
+                    pair_quaternions,
                     data["edge_index"],
                     vectors,
                 )
@@ -888,7 +1010,7 @@ class ScaleShiftMACE(MACE):
                 "d6_frame",
             ):
                 rigid_pair_edge_attrs = self.rigid_pair_edge_embedding(
-                    data["quaternions"],
+                    pair_quaternions,
                     data["edge_index"],
                     vectors,
                 )
@@ -907,7 +1029,7 @@ class ScaleShiftMACE(MACE):
             if self.rigid_pair_mode == "invariant_radial":
                 edge_feats = self.rigid_pair_radial_conditioning(
                     edge_feats=edge_feats,
-                    quaternions=data["quaternions"],
+                    quaternions=pair_quaternions,
                     edge_index=data["edge_index"],
                     edge_vectors=vectors,
                 )
@@ -998,6 +1120,22 @@ class ScaleShiftMACE(MACE):
         total_energy = e0 + inter_e
         node_energy = safe_double(node_e0.clone()) + safe_double(node_inter_es.clone())
 
+        torques: Optional[torch.Tensor] = None
+        if compute_torque:
+            torques = compute_torques(
+                energy=total_energy,
+                rotation_vectors=rotation_vectors,
+                training=training,
+                retain_graph=(
+                    compute_force
+                    or compute_virials
+                    or compute_stress
+                    or compute_hessian
+                    or compute_edge_forces
+                    or compute_atomic_stresses
+                ),
+            )
+
         forces, virials, stress, hessian, edge_forces, _ = get_outputs(
             energy=inter_e,
             positions=positions,
@@ -1030,6 +1168,7 @@ class ScaleShiftMACE(MACE):
             "node_energy": node_energy,
             "interaction_energy": inter_e,
             "forces": forces,
+            "torques": torques,
             "edge_forces": edge_forces,
             "virials": virials,
             "stress": stress,

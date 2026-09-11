@@ -224,6 +224,10 @@ class MACECalculator(Calculator):
             if kwargs.get("compute_atomic_stresses", False):
                 self.implemented_properties.extend(["stresses", "virials"])
                 self.compute_atomic_stresses = True
+
+        if model_type == "MACE":
+            self.implemented_properties.append("torques")
+
         if model_type == "PolarMACE":
             self.implemented_properties.extend(["fukui_functions"])
         if model_type in [
@@ -285,6 +289,12 @@ class MACECalculator(Calculator):
                         "stress_var",
                     ]
                 )
+
+                if model_type == "MACE":
+                    self.implemented_properties.extend(
+                        ["torques_comm", "torques_var"]
+                    )
+
             if model_type in [
                 "DipoleMACE",
                 "EnergyDipoleMACE",
@@ -473,6 +483,7 @@ class MACECalculator(Calculator):
         atom_level_keys = {
             "node_energy",
             "forces",
+            "torques",
             "charges",
             "atomic_stresses",
             "atomic_virials",
@@ -508,6 +519,7 @@ class MACECalculator(Calculator):
             "energy": [],
             "node_energy": [num_atoms],
             "forces": [num_atoms, 3],
+            "torques": [num_atoms, 3],
             "stress": [3, 3],
             "atomic_stresses": [num_atoms, 3, 3],
             "atomic_virials": [num_atoms, 3, 3],
@@ -663,7 +675,18 @@ class MACECalculator(Calculator):
         num_real_atoms = len(atoms)
         is_padded = self.pad_num_atoms > 0 or self.pad_num_edges > 0
 
-        compute_stress = self.model_type in ["MACE", "EnergyDipoleMACE", "PolarMACE"]
+        compute_stress = self.model_type in [
+            "MACE",
+            "EnergyDipoleMACE",
+            "PolarMACE",
+        ]
+
+        compute_torque = (
+            self.model_type == "MACE"
+            and properties is not None
+            and "torques" in properties
+        )
+
         # For oeq/hybrid + compile: create displacement outside the compiled
         # graph so autograd.grad (which runs as a graph break) can
         # differentiate energy w.r.t. displacement for stress.
@@ -704,6 +727,9 @@ class MACECalculator(Calculator):
                 "compute_edge_forces": self.compute_atomic_stresses,
                 "compute_atomic_stresses": self.compute_atomic_stresses,
             }
+            if self.model_type == "MACE":
+                model_kwargs["compute_torque"] = compute_torque
+
             if getattr(self, "compute_bec", False):
                 model_kwargs["compute_bec"] = True
 
@@ -726,11 +752,15 @@ class MACECalculator(Calculator):
         # covert from ret_tensors to calculator results dict
         self.results = {}
         scalar_tensors = set(["energy"])
-        results_store_ensemble = set(["energy", "forces", "stress", "dipole"])
+        results_store_ensemble = set(
+            ["energy", "forces", "torques", "stress", "dipole"]
+        )
         results_map = [
             ("energy", "energy", self.energy_units_to_eV),
             ("node_energy", "node_energy", self.energy_units_to_eV),
             ("forces", "forces", self.energy_units_to_eV / self.length_units_to_A),
+            # radians are dimensionless, so torque has energy units.
+            ("torques", "torques", self.energy_units_to_eV),
             ("stress", "stress", self.energy_units_to_eV / self.length_units_to_A**3),
             (
                 "stresses",

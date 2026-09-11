@@ -30,6 +30,64 @@ def quaternion_to_matrix(q: torch.Tensor, eps: float = 1.0e-12) -> torch.Tensor:
     ).reshape(q.shape[:-1] + (3, 3))
 
 
+def infinitesimal_rotate_quaternions(
+    quaternions: torch.Tensor,
+    rotation_vectors: torch.Tensor,
+) -> torch.Tensor:
+    """Apply a lab-frame infinitesimal rotation to scalar-first quaternions.
+
+    Only the derivative at ``rotation_vectors == 0`` is used. For a small
+    lab-frame rotation ``dtheta``,
+
+        q' = [1, dtheta/2] x q + O(dtheta^2).
+
+    Thus the returned value need not itself be a finite-rotation
+    parameterization; quaternion_to_matrix() normalizes it downstream.
+    """
+    w = quaternions[..., :1]
+    v = quaternions[..., 1:]
+
+    delta_w = -0.5 * torch.sum(
+        rotation_vectors * v,
+        dim=-1,
+        keepdim=True,
+    )
+    delta_v = 0.5 * (
+        w * rotation_vectors
+        + torch.cross(rotation_vectors, v, dim=-1)
+    )
+
+    return quaternions + torch.cat((delta_w, delta_v), dim=-1)
+
+
+def infinitesimal_rotate_tensor(
+    tensor: torch.Tensor,
+    rotation_vectors: torch.Tensor,
+) -> torch.Tensor:
+    """Apply the first-order lab-frame action T -> R T R^T.
+
+    At zero rotation,
+
+        dT = [dtheta]_x T - T [dtheta]_x.
+
+    The tensor therefore has exactly its original value at dtheta=0 while
+    retaining the correct derivative with respect to physical rotation.
+    """
+    x, y, z = rotation_vectors.unbind(-1)
+    zero = torch.zeros_like(x)
+
+    skew = torch.stack(
+        (
+            zero, -z,    y,
+            z,     zero, -x,
+            -y,    x,    zero,
+        ),
+        dim=-1,
+    ).reshape(rotation_vectors.shape[:-1] + (3, 3))
+
+    return tensor + skew @ tensor - tensor @ skew
+
+
 def ellipsoid_inertia_tensor(
     quaternions: torch.Tensor,
     diameters: torch.Tensor,

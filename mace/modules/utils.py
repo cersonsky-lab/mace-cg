@@ -49,6 +49,30 @@ def compute_forces(
     return -1 * gradient
 
 
+def compute_torques(
+    energy: torch.Tensor,
+    rotation_vectors: torch.Tensor,
+    training: bool = True,
+    retain_graph: bool = False,
+) -> torch.Tensor:
+    """Return lab-frame torques from an infinitesimal rotation variable."""
+    grad_outputs: List[Optional[torch.Tensor]] = [torch.ones_like(energy)]
+
+    gradient = torch.autograd.grad(
+        outputs=[energy],
+        inputs=[rotation_vectors],
+        grad_outputs=grad_outputs,
+        retain_graph=(training or retain_graph),
+        create_graph=training,
+        allow_unused=True,
+    )[0]
+
+    if gradient is None:
+        return torch.zeros_like(rotation_vectors)
+
+    return -gradient
+
+
 def cell_volume_and_mask(
     cell: torch.Tensor,  # [n_graphs, 3, 3] or [n_graphs * 3, 3]
     pbc: Optional[torch.Tensor] = None,  # [n_graphs, 3]
