@@ -596,6 +596,39 @@ class MACE(torch.nn.Module):
         if not self.use_rigid_features:
             node_feats = species_node_feats
             edge_invariant_tensor = None
+
+            # Backward compatibility for legacy pair-only rigid models.
+            #
+            # Older serialized pair-only models may have been built with
+            # the full hidden node irreps (e.g. 64x0e + 64x2e), even though
+            # rigid_feature_mode="none".  Their extra tensor node channels
+            # carried no rigid-node information; they were zero padding.
+            #
+            # Current pair-only models use scalar-only initial node features,
+            # so this branch is a no-op for newly constructed models.
+            if self.use_rigid_pair_features:
+                expected_node_dim = self.interactions[0].skip_tp._in1_dim
+                actual_node_dim = node_feats.shape[-1]
+
+                if actual_node_dim < expected_node_dim:
+                    padding = torch.zeros(
+                        (
+                            node_feats.shape[0],
+                            expected_node_dim - actual_node_dim,
+                        ),
+                        dtype=node_feats.dtype,
+                        device=node_feats.device,
+                    )
+                    node_feats = torch.cat(
+                        (node_feats, padding),
+                        dim=-1,
+                    )
+                elif actual_node_dim > expected_node_dim:
+                    raise RuntimeError(
+                        "initial node feature width "
+                        f"{actual_node_dim} exceeds interaction[0] "
+                        f"expected width {expected_node_dim}"
+                    )
         else:
             rigid_tensor = data[self.rigid_tensor_key]
             rigid_irreps = data[self.rigid_irreps_key]
@@ -711,6 +744,82 @@ class MACE(torch.nn.Module):
             if not self.use_inertia_edge_invariants:
                 inertia_feats = torch.zeros_like(inertia_feats)
             edge_feats = torch.cat((edge_feats, inertia_feats), dim=-1)
+
+        # Backward compatibility for legacy pair-only rigid models.
+        #
+        # Older pair-only models retained the rigid-node edge-feature
+        # layout even with rigid_feature_mode="none".  Those additional
+        # five scalar edge slots carried no active rigid-node signal.
+        #
+        # Current pair-only models use radial features only, so this is
+        # a no-op unless a serialized interaction structurally expects
+        # the legacy wider input.
+        if (
+            not self.use_rigid_features
+            and self.use_rigid_pair_features
+        ):
+            first_edge_layer = (
+                self.interactions[0]
+                .conv_tp_weights[0]
+            )
+
+            expected_edge_dim = getattr(
+                first_edge_layer,
+                "h_in",
+                None,
+            )
+
+            if expected_edge_dim is None:
+                weight = getattr(
+                    first_edge_layer,
+                    "weight",
+                    None,
+                )
+
+                if weight is not None:
+                    expected_edge_dim = int(
+                        weight.shape[0]
+                    )
+
+            if expected_edge_dim is None:
+                raise RuntimeError(
+                    "cannot determine legacy interaction "
+                    "edge-feature width"
+                )
+
+            expected_edge_dim = int(
+                expected_edge_dim
+            )
+            actual_edge_dim = int(
+                edge_feats.shape[-1]
+            )
+
+            if actual_edge_dim < expected_edge_dim:
+                edge_padding = torch.zeros(
+                    (
+                        edge_feats.shape[0],
+                        expected_edge_dim
+                        - actual_edge_dim,
+                    ),
+                    dtype=edge_feats.dtype,
+                    device=edge_feats.device,
+                )
+
+                edge_feats = torch.cat(
+                    (
+                        edge_feats,
+                        edge_padding,
+                    ),
+                    dim=-1,
+                )
+
+            elif actual_edge_dim > expected_edge_dim:
+                raise RuntimeError(
+                    "edge feature width "
+                    f"{actual_edge_dim} exceeds "
+                    "interaction[0] expected width "
+                    f"{expected_edge_dim}"
+                )
         if hasattr(self, "pair_repulsion"):
             pair_node_energy = self.pair_repulsion_fn(
                 lengths, data["node_attrs"], data["edge_index"], self.atomic_numbers
@@ -928,6 +1037,39 @@ class ScaleShiftMACE(MACE):
         if not self.use_rigid_features:
             node_feats = species_node_feats
             edge_invariant_tensor = None
+
+            # Backward compatibility for legacy pair-only rigid models.
+            #
+            # Older serialized pair-only models may have been built with
+            # the full hidden node irreps (e.g. 64x0e + 64x2e), even though
+            # rigid_feature_mode="none".  Their extra tensor node channels
+            # carried no rigid-node information; they were zero padding.
+            #
+            # Current pair-only models use scalar-only initial node features,
+            # so this branch is a no-op for newly constructed models.
+            if self.use_rigid_pair_features:
+                expected_node_dim = self.interactions[0].skip_tp._in1_dim
+                actual_node_dim = node_feats.shape[-1]
+
+                if actual_node_dim < expected_node_dim:
+                    padding = torch.zeros(
+                        (
+                            node_feats.shape[0],
+                            expected_node_dim - actual_node_dim,
+                        ),
+                        dtype=node_feats.dtype,
+                        device=node_feats.device,
+                    )
+                    node_feats = torch.cat(
+                        (node_feats, padding),
+                        dim=-1,
+                    )
+                elif actual_node_dim > expected_node_dim:
+                    raise RuntimeError(
+                        "initial node feature width "
+                        f"{actual_node_dim} exceeds interaction[0] "
+                        f"expected width {expected_node_dim}"
+                    )
         else:
             rigid_tensor = data[self.rigid_tensor_key]
             rigid_irreps = data[self.rigid_irreps_key]
@@ -1043,6 +1185,82 @@ class ScaleShiftMACE(MACE):
             if not self.use_inertia_edge_invariants:
                 inertia_feats = torch.zeros_like(inertia_feats)
             edge_feats = torch.cat((edge_feats, inertia_feats), dim=-1)
+
+        # Backward compatibility for legacy pair-only rigid models.
+        #
+        # Older pair-only models retained the rigid-node edge-feature
+        # layout even with rigid_feature_mode="none".  Those additional
+        # five scalar edge slots carried no active rigid-node signal.
+        #
+        # Current pair-only models use radial features only, so this is
+        # a no-op unless a serialized interaction structurally expects
+        # the legacy wider input.
+        if (
+            not self.use_rigid_features
+            and self.use_rigid_pair_features
+        ):
+            first_edge_layer = (
+                self.interactions[0]
+                .conv_tp_weights[0]
+            )
+
+            expected_edge_dim = getattr(
+                first_edge_layer,
+                "h_in",
+                None,
+            )
+
+            if expected_edge_dim is None:
+                weight = getattr(
+                    first_edge_layer,
+                    "weight",
+                    None,
+                )
+
+                if weight is not None:
+                    expected_edge_dim = int(
+                        weight.shape[0]
+                    )
+
+            if expected_edge_dim is None:
+                raise RuntimeError(
+                    "cannot determine legacy interaction "
+                    "edge-feature width"
+                )
+
+            expected_edge_dim = int(
+                expected_edge_dim
+            )
+            actual_edge_dim = int(
+                edge_feats.shape[-1]
+            )
+
+            if actual_edge_dim < expected_edge_dim:
+                edge_padding = torch.zeros(
+                    (
+                        edge_feats.shape[0],
+                        expected_edge_dim
+                        - actual_edge_dim,
+                    ),
+                    dtype=edge_feats.dtype,
+                    device=edge_feats.device,
+                )
+
+                edge_feats = torch.cat(
+                    (
+                        edge_feats,
+                        edge_padding,
+                    ),
+                    dim=-1,
+                )
+
+            elif actual_edge_dim > expected_edge_dim:
+                raise RuntimeError(
+                    "edge feature width "
+                    f"{actual_edge_dim} exceeds "
+                    "interaction[0] expected width "
+                    f"{expected_edge_dim}"
+                )
 
         if hasattr(self, "pair_repulsion"):
             pair_node_energy = self.pair_repulsion_fn(
