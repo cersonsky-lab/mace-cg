@@ -24,12 +24,16 @@ from mace.modules.embeddings import GenericJointEmbedding
 from mace.modules.radial import ZBLBasis
 from mace.modules.rigid_pair_invariant import RigidPairInvariantRadialConditioning
 from mace.modules.rigid_pair_tp import (
+    RigidPairC1WignerL123EdgeEmbedding,
     RigidPairC2EdgeEmbedding,
     RigidPairD6EdgeEmbedding,
     RigidPairEdgeEmbedding,
     RigidPairIrrepCompleteEdgeEmbedding,
+    RigidPairScalarCompleteEdgeEmbedding,
+    RigidPairPoseInvariantEdgeEmbedding,
     RigidPairRawEdgeEmbedding,
     validate_rigid_pair_mode,
+    RigidPairOracleMixedScalarEdgeEmbedding,
 )
 from mace.tools.scatter import scatter_mean, scatter_sum
 from mace.tools.torch_tools import get_change_of_basis, spherical_to_cartesian
@@ -313,6 +317,20 @@ class MACE(torch.nn.Module):
             #   [ordinary SH | rigid-pair SH]
             edge_attrs_irreps = sh_irreps + self.rigid_pair_edge_embedding.edge_irreps
 
+        elif self.rigid_pair_mode == "c1_wigner_l123":
+            self.rigid_pair_edge_embedding = (
+                RigidPairC1WignerL123EdgeEmbedding(
+                    lmax=max_ell,
+                    edge_irreps=sh_irreps,
+                    multiplicity=self.rigid_pair_multiplicity,
+                )
+            )
+
+            edge_attrs_irreps = (
+                sh_irreps
+                + self.rigid_pair_edge_embedding.edge_irreps
+            )
+
         elif self.rigid_pair_mode == "full_frame_compact":
             # Compact residual rigid-pair pathway.
             #
@@ -383,6 +401,29 @@ class MACE(torch.nn.Module):
 
             edge_attrs_irreps = sh_irreps + self.rigid_pair_edge_embedding.edge_irreps
 
+        elif self.rigid_pair_mode == "full_frame_scalar_complete":
+            self.rigid_pair_edge_embedding = (
+                RigidPairScalarCompleteEdgeEmbedding(
+                    lmax=max_ell,
+                    edge_irreps=sh_irreps,
+                )
+            )
+
+            edge_attrs_irreps = (
+                sh_irreps
+                + self.rigid_pair_edge_embedding.edge_irreps
+            )
+
+        elif self.rigid_pair_mode == "pose_invariant_exact":
+            self.rigid_pair_edge_embedding = (
+                RigidPairPoseInvariantEdgeEmbedding()
+            )
+
+            edge_attrs_irreps = (
+                sh_irreps
+                + self.rigid_pair_edge_embedding.edge_irreps
+            )
+
         elif self.rigid_pair_mode == "full_frame_raw":
             # Diagnostic upper bound: retain the complete
             #
@@ -394,6 +435,16 @@ class MACE(torch.nn.Module):
             )
 
             edge_attrs_irreps = sh_irreps + self.rigid_pair_edge_embedding.edge_irreps
+
+        elif self.rigid_pair_mode == "oracle_mixed_scalar":
+            self.rigid_pair_edge_embedding = (
+                RigidPairOracleMixedScalarEdgeEmbedding()
+            )
+
+            edge_attrs_irreps = (
+                sh_irreps
+                + self.rigid_pair_edge_embedding.edge_irreps
+            )
 
         self.edge_attrs_irreps = edge_attrs_irreps
 
@@ -706,7 +757,11 @@ class MACE(torch.nn.Module):
             elif self.rigid_pair_mode in (
                 "full_frame",
                 "full_frame_irrep_complete",
+                "full_frame_scalar_complete",
+                "pose_invariant_exact",
                 "full_frame_raw",
+            "oracle_mixed_scalar",
+                "c1_wigner_l123",
                 "c2_frame",
                 "d6_frame",
             ):
@@ -1147,7 +1202,11 @@ class ScaleShiftMACE(MACE):
             elif self.rigid_pair_mode in (
                 "full_frame",
                 "full_frame_irrep_complete",
+                "full_frame_scalar_complete",
+                "pose_invariant_exact",
                 "full_frame_raw",
+            "oracle_mixed_scalar",
+                "c1_wigner_l123",
                 "c2_frame",
                 "d6_frame",
             ):

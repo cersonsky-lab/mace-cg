@@ -290,6 +290,307 @@ class RigidPairIrrepCompleteEdgeEmbedding(torch.nn.Module):
         return self.projection(full_pair)
 
 
+class RigidPairOracleMixedScalarEdgeEmbedding(torch.nn.Module):
+    """Diagnostic frozen scalar containing the synthetic mixed C1 teacher.
+
+    This is not a production molecular representation.  It is an
+    architecture-localization control: if downstream MACE cannot learn
+    the synthetic energy when supplied the exact invariant as a scalar
+    edge feature, the failure lies after the generic C1 projection.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.edge_irreps = o3.Irreps("1x0e")
+        self.irreps_out = self.edge_irreps
+
+    def forward(
+        self,
+        quaternions: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_vectors: torch.Tensor,
+    ) -> torch.Tensor:
+        if quaternions.ndim != 2 or quaternions.shape[-1] != 4:
+            raise ValueError(
+                "quaternions must have shape (num_nodes, 4)"
+            )
+
+        if edge_index.ndim != 2 or edge_index.shape[0] != 2:
+            raise ValueError(
+                "edge_index must have shape (2, num_edges)"
+            )
+
+        if edge_vectors.ndim != 2 or edge_vectors.shape[-1] != 3:
+            raise ValueError(
+                "edge_vectors must have shape (num_edges, 3)"
+            )
+
+        distances = torch.linalg.norm(
+            edge_vectors,
+            dim=-1,
+        )
+
+        if torch.any(distances <= 0):
+            raise ValueError(
+                "edge_vectors must have nonzero length"
+            )
+
+        rhat = edge_vectors / distances.unsqueeze(-1)
+
+        rotations = quaternion_to_matrix(quaternions)
+
+        i = edge_index[0]
+        j = edge_index[1]
+
+        x_i = rotations[i, :, 0]
+        z_i = rotations[i, :, 2]
+        x_j = rotations[j, :, 0]
+        z_j = rotations[j, :, 2]
+
+        def dot(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+            return torch.sum(a * b, dim=-1)
+
+        u1 = dot(x_i, x_j)
+        u2 = dot(z_i, z_j)
+
+        u3 = 0.5 * (
+            dot(x_i, z_j)
+            + dot(z_i, x_j)
+        )
+
+        x_i_r = dot(x_i, rhat)
+        z_i_r = dot(z_i, rhat)
+        x_j_r = dot(x_j, rhat)
+        z_j_r = dot(z_j, rhat)
+
+        u4 = x_i_r * x_j_r
+        u5 = z_i_r * z_j_r
+
+        u6 = 0.5 * (
+            x_i_r * z_j_r
+            + z_i_r * x_j_r
+        )
+
+        value = (
+            +0.45 * u1
+            -0.35 * u2
+            +0.25 * u3
+            +0.30 * u4
+            -0.20 * u5
+            +0.15 * u6
+        )
+
+        return value.unsqueeze(-1)
+
+
+class RigidPairScalarCompleteEdgeEmbedding(torch.nn.Module):
+    """Preserve all raw invariant scalars while compressing non-scalars.
+
+    The generic C1 full-frame tensor product contains many independent
+    0e channels.  Standard ``full_frame`` immediately learns a map from
+    that multiplicity to a single 0e output.  This diagnostic keeps all
+    raw 0e channels unchanged while projecting only the non-scalar
+    sectors to ordinary spherical-harmonic width.
+    """
+
+    def __init__(
+        self,
+        lmax: int,
+        edge_irreps: o3.Irreps,
+    ):
+        super().__init__()
+
+        self.full_pair = RigidPairTensorProductFeatures(
+            lmax=lmax,
+        )
+
+        scalar_indices = []
+
+        for (_, ir), sl in zip(
+            self.full_pair.irreps_out,
+            self.full_pair.irreps_out.slices(),
+        ):
+            if ir.l == 0 and ir.p == 1:
+                scalar_indices.extend(
+                    range(sl.start, sl.stop)
+                )
+
+        if not scalar_indices:
+            raise RuntimeError(
+                "raw rigid-pair representation contains no 0e channels"
+            )
+
+        self.register_buffer(
+            "scalar_indices",
+            torch.tensor(
+                scalar_indices,
+                dtype=torch.long,
+            ),
+        )
+
+        self.num_raw_scalars = len(scalar_indices)
+
+        self.scalar_irreps = o3.Irreps(
+            [
+                (
+                    self.num_raw_scalars,
+                    o3.Irrep("0e"),
+                )
+            ]
+        )
+
+        base_edge_irreps = o3.Irreps(edge_irreps)
+
+        self.non_scalar_irreps = o3.Irreps(
+            [
+                (mul, ir)
+                for mul, ir in base_edge_irreps
+                if ir.l != 0
+            ]
+        )
+
+        with torch.random.fork_rng(devices=[]):
+            self.non_scalar_projection = o3.Linear(
+                self.full_pair.irreps_out,
+                self.non_scalar_irreps,
+            )
+
+        self.edge_irreps = (
+            self.scalar_irreps
+            + self.non_scalar_irreps
+        )
+        self.irreps_out = self.edge_irreps
+
+    def forward(
+        self,
+        quaternions: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_vectors: torch.Tensor,
+    ) -> torch.Tensor:
+        raw = self.full_pair(
+            quaternions,
+            edge_index,
+            edge_vectors,
+        )
+
+        scalar = torch.index_select(
+            raw,
+            dim=-1,
+            index=self.scalar_indices,
+        )
+
+        non_scalar = self.non_scalar_projection(
+            raw
+        )
+
+        return torch.cat(
+            (scalar, non_scalar),
+            dim=-1,
+        )
+
+
+class RigidPairPoseInvariantEdgeEmbedding(torch.nn.Module):
+    """Exact directed internal-pose diagnostic for a rigid dimer.
+
+    For directed edge i -> j, return
+
+        R_i^T R_j
+        R_i^T r_hat_ij
+
+    The 3x3 relative rotation is invariant under global SO(3).
+    The body-frame separation direction is also invariant under
+    global SO(3).
+
+    Under spatial inversion the relative-rotation entries are even
+    while the separation-direction entries are odd, hence
+
+        9x0e + 3x0o.
+
+    This is a diagnostic upper bound, not a proposed compressed
+    production representation.
+    """
+
+    def __init__(self):
+        super().__init__()
+
+        # SO(3)-only diagnostic:
+        #
+        # Both R_i^T R_j and R_i^T r_hat are invariant under
+        # global proper rotations.  We deliberately label every
+        # component 0e so O(3) parity bookkeeping downstream does
+        # not suppress the three body-frame direction coordinates.
+        #
+        # This is an information/optimization upper-bound control,
+        # not an O(3)-equivariant production representation.
+        self.edge_irreps = o3.Irreps(
+            "12x0e"
+        )
+
+        self.irreps_out = (
+            self.edge_irreps
+        )
+
+    def forward(
+        self,
+        quaternions: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_vectors: torch.Tensor,
+    ) -> torch.Tensor:
+        rotations = quaternion_to_matrix(
+            quaternions
+        )
+
+        senders = edge_index[0]
+        receivers = edge_index[1]
+
+        rnorm = torch.linalg.norm(
+            edge_vectors,
+            dim=-1,
+            keepdim=True,
+        )
+
+        eps = torch.finfo(
+            edge_vectors.dtype
+        ).eps
+
+        rhat = (
+            edge_vectors
+            / torch.clamp(
+                rnorm,
+                min=eps,
+            )
+        )
+
+        Ri = rotations[senders]
+        Rj = rotations[receivers]
+
+        RiT = Ri.transpose(
+            -1,
+            -2,
+        )
+
+        relative_rotation = torch.matmul(
+            RiT,
+            Rj,
+        )
+
+        sender_rhat = torch.matmul(
+            RiT,
+            rhat.unsqueeze(-1),
+        ).squeeze(-1)
+
+        return torch.cat(
+            (
+                relative_rotation.reshape(
+                    -1,
+                    9,
+                ),
+                sender_rhat,
+            ),
+            dim=-1,
+        )
+
+
 class RigidPairRawEdgeEmbedding(torch.nn.Module):
     """Uncompressed rigid-pair tensor-product edge representation.
 
@@ -320,6 +621,307 @@ class RigidPairRawEdgeEmbedding(torch.nn.Module):
         )
 
 
+C1_WIGNER_L123_BODY_IRREPS = o3.Irreps(
+    "3x1o + 5x2e + 7x3o"
+)
+
+
+class RigidPairC1WignerL123EdgeEmbedding(torch.nn.Module):
+    """C1 Wigner-D body harmonics through l=3.
+
+    For each proper body-to-space rotation R, retain the complete
+    body-index multiplicity of D^l(R):
+
+        l=1: 3x1o
+        l=2: 5x2e
+        l=3: 7x3o
+
+    Pair features are constructed in three same-l branches,
+
+        Y(r_ij) x D^l(R_i) x D^l(R_j),
+
+    and the concatenated complete tensor-product output is projected
+    to the same ordinary edge-SH irreps used by full_frame.
+
+    This deliberately omits cross-l body products in this first
+    diagnostic.
+    """
+
+    def __init__(
+        self,
+        lmax: int,
+        edge_irreps: o3.Irreps,
+        multiplicity: int = 1,
+    ):
+        super().__init__()
+
+        if isinstance(multiplicity, bool) or multiplicity < 1:
+            raise ValueError(
+                "multiplicity must be a positive integer"
+            )
+
+        self.lmax = int(lmax)
+        self.multiplicity = int(multiplicity)
+
+        self.sh_irreps = o3.Irreps(edge_irreps)
+        self.body_irreps = C1_WIGNER_L123_BODY_IRREPS
+
+        self.body_irreps_l1 = o3.Irreps("3x1o")
+        self.body_irreps_l2 = o3.Irreps("5x2e")
+        self.body_irreps_l3 = o3.Irreps("7x3o")
+
+        self.edge_center_tp_l1 = o3.FullTensorProduct(
+            self.sh_irreps,
+            self.body_irreps_l1,
+        )
+        self.pair_tp_l1 = o3.FullTensorProduct(
+            self.edge_center_tp_l1.irreps_out,
+            self.body_irreps_l1,
+        )
+
+        self.edge_center_tp_l2 = o3.FullTensorProduct(
+            self.sh_irreps,
+            self.body_irreps_l2,
+        )
+        self.pair_tp_l2 = o3.FullTensorProduct(
+            self.edge_center_tp_l2.irreps_out,
+            self.body_irreps_l2,
+        )
+
+        self.edge_center_tp_l3 = o3.FullTensorProduct(
+            self.sh_irreps,
+            self.body_irreps_l3,
+        )
+        self.pair_tp_l3 = o3.FullTensorProduct(
+            self.edge_center_tp_l3.irreps_out,
+            self.body_irreps_l3,
+        )
+
+        self.pair_irreps = (
+            self.pair_tp_l1.irreps_out
+            + self.pair_tp_l2.irreps_out
+            + self.pair_tp_l3.irreps_out
+        )
+
+        self.base_edge_irreps = o3.Irreps(
+            edge_irreps
+        )
+
+        self.edge_irreps = o3.Irreps(
+            [
+                (
+                    mul * self.multiplicity,
+                    ir,
+                )
+                for mul, ir in self.base_edge_irreps
+            ]
+        )
+
+        self.irreps_in = self.pair_irreps
+        self.irreps_out = self.edge_irreps
+
+        # Match the existing full_frame convention: the large rigid
+        # pair basis is compressed back to ordinary edge-SH irreps.
+        # fork_rng avoids changing initialization of the surrounding
+        # MACE model merely by enabling this diagnostic.
+        with torch.random.fork_rng(devices=[]):
+            self.projection = o3.Linear(
+                self.pair_irreps,
+                self.edge_irreps,
+            )
+
+        self.output_scale = (
+            1.0 / math.sqrt(self.multiplicity)
+        )
+
+    @staticmethod
+    def _wigner_block(
+        rotation_matrices: torch.Tensor,
+        ell: int,
+    ) -> torch.Tensor:
+        """Return complete multiplicity-major D^ell(R).
+
+        e3nn returns D with layout
+
+            [..., m_space, n_body].
+
+        For an equivariant feature representation, n_body labels
+        independent copies of the space-frame ell irrep, so transpose
+        to
+
+            [..., n_body, m_space]
+
+        before flattening.
+        """
+        parity = -1 if ell % 2 else 1
+
+        D = o3.Irrep(
+            ell,
+            parity,
+        ).D_from_matrix(
+            rotation_matrices
+        )
+
+        dim = 2 * ell + 1
+
+        return D.transpose(
+            -1,
+            -2,
+        ).reshape(
+            *rotation_matrices.shape[:-2],
+            dim * dim,
+        )
+
+    def body_features(
+        self,
+        rotation_matrices: torch.Tensor,
+    ) -> torch.Tensor:
+        """Complete C1 D^1 + D^2 + D^3 body representation."""
+        return torch.cat(
+            (
+                self._wigner_block(
+                    rotation_matrices,
+                    1,
+                ),
+                self._wigner_block(
+                    rotation_matrices,
+                    2,
+                ),
+                self._wigner_block(
+                    rotation_matrices,
+                    3,
+                ),
+            ),
+            dim=-1,
+        )
+
+    def forward(
+        self,
+        quaternions: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_vectors: torch.Tensor,
+    ) -> torch.Tensor:
+        if (
+            quaternions.ndim != 2
+            or quaternions.shape[-1] != 4
+        ):
+            raise ValueError(
+                "quaternions must have shape "
+                "(num_nodes, 4)"
+            )
+
+        if (
+            edge_index.ndim != 2
+            or edge_index.shape[0] != 2
+        ):
+            raise ValueError(
+                "edge_index must have shape "
+                "(2, num_edges)"
+            )
+
+        if (
+            edge_vectors.ndim != 2
+            or edge_vectors.shape[-1] != 3
+        ):
+            raise ValueError(
+                "edge_vectors must have shape "
+                "(num_edges, 3)"
+            )
+
+        if (
+            edge_vectors.shape[0]
+            != edge_index.shape[1]
+        ):
+            raise ValueError(
+                "edge_vectors and edge_index must "
+                "contain the same number of edges"
+            )
+
+        distances = torch.linalg.vector_norm(
+            edge_vectors,
+            dim=-1,
+        )
+
+        if torch.any(distances <= 1.0e-12):
+            raise ValueError(
+                "c1_wigner_l123 does not support "
+                "zero-length edges"
+            )
+
+        directions = (
+            edge_vectors
+            / distances.unsqueeze(-1)
+        )
+
+        edge_features = o3.spherical_harmonics(
+            self.sh_irreps,
+            directions,
+            normalize=True,
+            normalization="component",
+        )
+
+        rotations = quaternion_to_matrix(
+            quaternions
+        )
+
+        body = self.body_features(
+            rotations
+        )
+
+        # Complete C1 blocks:
+        #   D1:  9 values  [0:9]
+        #   D2: 25 values  [9:34]
+        #   D3: 49 values  [34:83]
+        body_l1 = body[:, 0:9]
+        body_l2 = body[:, 9:34]
+        body_l3 = body[:, 34:83]
+
+        centers = edge_index[0]
+        neighbors = edge_index[1]
+
+        center_l1 = self.edge_center_tp_l1(
+            edge_features,
+            body_l1[centers],
+        )
+        pair_l1 = self.pair_tp_l1(
+            center_l1,
+            body_l1[neighbors],
+        )
+
+        center_l2 = self.edge_center_tp_l2(
+            edge_features,
+            body_l2[centers],
+        )
+        pair_l2 = self.pair_tp_l2(
+            center_l2,
+            body_l2[neighbors],
+        )
+
+        center_l3 = self.edge_center_tp_l3(
+            edge_features,
+            body_l3[centers],
+        )
+        pair_l3 = self.pair_tp_l3(
+            center_l3,
+            body_l3[neighbors],
+        )
+
+        pair_features = torch.cat(
+            (
+                pair_l1,
+                pair_l2,
+                pair_l3,
+            ),
+            dim=-1,
+        )
+
+        return (
+            self.projection(pair_features)
+            * self.output_scale
+        )
+
+
+
 def validate_rigid_pair_mode(mode: str) -> str:
     """Validate the rigid-pair edge representation mode."""
     if mode in (
@@ -333,8 +935,12 @@ def validate_rigid_pair_mode(mode: str) -> str:
         "full_frame",
         "full_frame_compact",
         "full_frame_irrep_complete",
+        "full_frame_scalar_complete",
+        "pose_invariant_exact",
         "full_frame_raw",
+        "oracle_mixed_scalar",
         "invariant_radial",
+        "c1_wigner_l123",
     }
 
     if mode not in valid_modes:
