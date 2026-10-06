@@ -339,16 +339,6 @@ class MACE(torch.nn.Module):
 
             edge_attrs_irreps = sh_irreps
 
-        elif self.rigid_pair_mode == "d6_frame_compact":
-            self.rigid_pair_edge_embedding = RigidPairD6EdgeEmbedding(
-                lmax=max_ell,
-                edge_irreps=sh_irreps,
-                multiplicity=1,
-            )
-            with torch.no_grad():
-                self.rigid_pair_edge_embedding.projection.weight.zero_()
-            edge_attrs_irreps = sh_irreps
-
         elif self.rigid_pair_mode == "d6_frame":
             self.rigid_pair_edge_embedding = RigidPairD6EdgeEmbedding(
                 lmax=max_ell,
@@ -710,10 +700,7 @@ class MACE(torch.nn.Module):
                     pair_quaternions,
                     rotation_vectors,
                 )
-            if self.rigid_pair_mode in (
-                "full_frame_compact",
-                "d6_frame_compact",
-            ):
+            if self.rigid_pair_mode in ("full_frame_compact",):
                 rigid_pair_edge_attrs = self.rigid_pair_edge_embedding(
                     pair_quaternions,
                     data["edge_index"],
@@ -1152,10 +1139,7 @@ class ScaleShiftMACE(MACE):
                     pair_quaternions,
                     rotation_vectors,
                 )
-            if self.rigid_pair_mode in (
-                "full_frame_compact",
-                "d6_frame_compact",
-            ):
+            if self.rigid_pair_mode in ("full_frame_compact",):
                 rigid_pair_edge_attrs = self.rigid_pair_edge_embedding(
                     pair_quaternions,
                     data["edge_index"],

@@ -314,7 +314,6 @@ def validate_rigid_pair_mode(mode: str) -> str:
         "c1_frame",
         "c2_frame",
         "d6_frame",
-        "d6_frame_compact",
     ):
         return mode
     valid_modes = {

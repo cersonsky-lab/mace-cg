@@ -288,7 +288,6 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
             "invariant_radial",
             "c2_frame",
             "d6_frame",
-            "d6_frame_compact",
         ),
         help=(
             "Optional rigid-body pair-orientation contribution to MACE "
