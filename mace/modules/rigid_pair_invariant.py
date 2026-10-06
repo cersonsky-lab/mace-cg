@@ -2,7 +2,7 @@
 
 import torch
 
-from mace.modules.rigid_pair import quaternion_to_matrix
+from mace.data.rigid_body import quaternion_to_matrix
 
 
 def rigid_pair_invariant_geometry(
@@ -79,6 +79,12 @@ def rigid_pair_invariant_geometry(
         rhat,
     )
 
+    # R_i and R_j individually are absolute SO(3) orientations and are
+    # not scalar features. Their relative rotation is different:
+    #
+    #     (G R_i).T @ (G R_j) = R_i.T @ R_j,
+    #
+    # so its matrix entries are legitimate global scalar invariants.
     relative_rotation = torch.einsum(
         "eai,eaj->eij",
         R_i,

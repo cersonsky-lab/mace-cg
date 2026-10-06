@@ -80,7 +80,17 @@ def test_output_dimension_is_full_input_product():
     assert model.irreps_out.dim == expected_dimension
 
 
-def test_frame_features_are_three_l1_vectors():
+def test_frame_features_are_complete_wigner_d1():
+    """Generic full-frame features are one constrained D1(R)."""
+
+    from mace.data.rigid_body import (
+        quaternion_to_matrix,
+    )
+    from mace.modules.rigid_wigner import (
+        full_wigner_features,
+        full_wigner_irreps,
+    )
+
     model = RigidPairTensorProductFeatures(
         lmax=1
     ).to(dtype=DTYPE)
@@ -90,24 +100,79 @@ def test_frame_features_are_three_l1_vectors():
         0.61,
     )
 
-    from mace.data.rigid_body import quaternion_to_matrix
-
-    R = quaternion_to_matrix(
+    rotation = quaternion_to_matrix(
         _wxyz(body)
     )
 
     features = model._frame_features(
-        R.unsqueeze(0)
+        rotation.unsqueeze(0)
     )[0]
 
-    expected = torch.tensor(
-        body.as_matrix().T.reshape(-1),
-        dtype=DTYPE,
+    expected = full_wigner_features(
+        rotation,
+        ells=(1,),
+    )
+
+    assert (
+        model.frame_irreps
+        == full_wigner_irreps(
+            (1,)
+        )
+    )
+
+    assert (
+        model.frame_irreps
+        == o3.Irreps(
+            "3x1o"
+        )
     )
 
     torch.testing.assert_close(
         features,
         expected,
+        atol=ATOL,
+        rtol=RTOL,
+    )
+
+    # Multiplicity-major e3nn storage:
+    #
+    #     [body index n][space irrep index m]
+    #
+    # so reshaping gives R.T, not three independent physical
+    # vectors.
+    packed_d1 = features.reshape(
+        3,
+        3,
+    )
+
+    torch.testing.assert_close(
+        packed_d1,
+        rotation.T,
+        atol=ATOL,
+        rtol=RTOL,
+    )
+
+    recovered_rotation = packed_d1.T
+
+    torch.testing.assert_close(
+        recovered_rotation.T
+        @ recovered_rotation,
+        torch.eye(
+            3,
+            dtype=DTYPE,
+        ),
+        atol=ATOL,
+        rtol=RTOL,
+    )
+
+    torch.testing.assert_close(
+        torch.linalg.det(
+            recovered_rotation
+        ),
+        torch.tensor(
+            1.0,
+            dtype=DTYPE,
+        ),
         atol=ATOL,
         rtol=RTOL,
     )

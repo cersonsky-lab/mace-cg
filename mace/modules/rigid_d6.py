@@ -5,9 +5,17 @@ import math
 import torch
 from e3nn import o3
 
-from mace.data.rigid_body import quaternion_to_matrix
+from mace.data.rigid_body import (
+    quaternion_to_matrix,
+)
+from mace.modules.rigid_wigner import (
+    wigner_body_template,
+)
 
-D6_BODY_IRREPS = o3.Irreps("1x2e + 1x6e")
+
+D6_BODY_IRREPS = o3.Irreps(
+    "1x2e + 1x6e"
+)
 
 
 def _hexagon_body_directions(
@@ -19,29 +27,47 @@ def _hexagon_body_directions(
         6,
         dtype=dtype,
         device=device,
-    ) * (math.pi / 3.0)
+    ) * (
+        math.pi / 3.0
+    )
 
-    zeros = torch.zeros_like(angles)
+    zeros = torch.zeros_like(
+        angles
+    )
 
     return torch.stack(
         (
-            torch.cos(angles),
-            torch.sin(angles),
+            torch.cos(
+                angles
+            ),
+            torch.sin(
+                angles
+            ),
             zeros,
         ),
         dim=-1,
     )
 
 
-def d6_body_features_from_matrix(
-    rotation: torch.Tensor,
-) -> torch.Tensor:
-    if rotation.shape[-2:] != (3, 3):
-        raise ValueError("rotation must have shape (..., 3, 3)")
+def _d6_body_templates(
+    *,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+]:
+    normal = torch.tensor(
+        [
+            0.0,
+            0.0,
+            1.0,
+        ],
+        dtype=dtype,
+        device=device,
+    )
 
-    normal = rotation[..., :, 2]
-
-    plane = o3.spherical_harmonics(
+    plane_template = o3.spherical_harmonics(
         2,
         normal,
         normalize=True,
@@ -49,22 +75,55 @@ def d6_body_features_from_matrix(
     )
 
     body_hexagon = _hexagon_body_directions(
+        dtype=dtype,
+        device=device,
+    )
+
+    hexatic_template = o3.spherical_harmonics(
+        6,
+        body_hexagon,
+        normalize=True,
+        normalization="component",
+    ).mean(
+        dim=-2
+    )
+
+    return (
+        plane_template,
+        hexatic_template,
+    )
+
+
+def d6_body_features_from_matrix(
+    rotation: torch.Tensor,
+) -> torch.Tensor:
+    if rotation.shape[-2:] != (
+        3,
+        3,
+    ):
+        raise ValueError(
+            "rotation must have shape (..., 3, 3)"
+        )
+
+    (
+        plane_template,
+        hexatic_template,
+    ) = _d6_body_templates(
         dtype=rotation.dtype,
         device=rotation.device,
     )
 
-    space_hexagon = torch.einsum(
-        "...ij,kj->...ki",
+    plane = wigner_body_template(
         rotation,
-        body_hexagon,
+        ell=2,
+        body_template=plane_template,
     )
 
-    hexatic = o3.spherical_harmonics(
-        6,
-        space_hexagon,
-        normalize=True,
-        normalization="component",
-    ).mean(dim=-2)
+    hexatic = wigner_body_template(
+        rotation,
+        ell=6,
+        body_template=hexatic_template,
+    )
 
     return torch.cat(
         (
@@ -78,5 +137,10 @@ def d6_body_features_from_matrix(
 def d6_body_features(
     quaternions: torch.Tensor,
 ) -> torch.Tensor:
-    rotation = quaternion_to_matrix(quaternions)
-    return d6_body_features_from_matrix(rotation)
+    rotation = quaternion_to_matrix(
+        quaternions
+    )
+
+    return d6_body_features_from_matrix(
+        rotation
+    )

@@ -1,8 +1,25 @@
 """Rigid-body feature utilities for MACE.
 
-Quaternion convention is scalar-first (w, x, y, z), matching the supplied XYZ.
-The ellipsoid diameters are interpreted as full principal diameters.  With unit
-mass, principal moments are Ixx=(b^2+c^2)/20 etc.  Set mass_scale if needed.
+Rigid orientation convention
+----------------------------
+Quaternions are scalar-first [w, x, y, z]. quaternion_to_matrix returns the
+active body-to-space rotation R satisfying
+
+    v_space = R @ v_body.
+
+Under a global lab-frame rotation G, a physical orientation transforms as
+
+    R -> G @ R.
+
+Absolute rotation matrices are not scalar features. Equivariant orientation
+features should be constructed from Wigner matrices D^ell(R), or from fixed
+body-frame templates acted on by those matrices.
+
+Relative quantities such as R_i.T @ R_j are different: the common global
+left action cancels, so they are legitimate global invariants.
+
+The ellipsoid diameters are interpreted as full principal diameters. With unit
+mass, principal moments are Ixx=(b^2+c^2)/20 etc. Set mass_scale if needed.
 """
 
 from __future__ import annotations

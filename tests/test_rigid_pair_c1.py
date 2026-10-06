@@ -1,9 +1,6 @@
 import torch
 from e3nn import o3
 
-from mace.data.rigid_body import (
-    quaternion_to_matrix,
-)
 from mace.modules.rigid_pair_tp import (
     RigidPairC1EdgeEmbedding,
 )
@@ -12,57 +9,11 @@ from mace.modules.rigid_pair_tp import (
 def _matrix_to_wxyz(
     matrix: torch.Tensor,
 ) -> torch.Tensor:
-    """Convert rotation matrix to scalar-first quaternion.
+    """e3nn and MACE use scalar-first [w, x, y, z] here."""
 
-    Uses e3nn's matrix->quaternion helper if available, while
-    preserving the quaternion convention expected by
-    mace.data.rigid_body.quaternion_to_matrix.
-    """
-    quaternion = o3.matrix_to_quaternion(
+    return o3.matrix_to_quaternion(
         matrix
     )
-
-    # Verify convention rather than assuming it.
-    reconstructed = (
-        quaternion_to_matrix(
-            quaternion.unsqueeze(0)
-        )[0]
-    )
-
-    if torch.allclose(
-        reconstructed,
-        matrix,
-        atol=1.0e-7,
-        rtol=1.0e-7,
-    ):
-        return quaternion
-
-    # Try xyzw -> wxyz conversion if required.
-    converted = torch.cat(
-        (
-            quaternion[-1:],
-            quaternion[:-1],
-        ),
-        dim=0,
-    )
-
-    reconstructed = (
-        quaternion_to_matrix(
-            converted.unsqueeze(0)
-        )[0]
-    )
-
-    if not torch.allclose(
-        reconstructed,
-        matrix,
-        atol=1.0e-7,
-        rtol=1.0e-7,
-    ):
-        raise RuntimeError(
-            "Could not reconcile quaternion convention."
-        )
-
-    return converted
 
 
 def test_c1_pair_forward_shape_and_finite():

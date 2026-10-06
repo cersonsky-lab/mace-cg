@@ -1,21 +1,14 @@
-"""Standalone equivariant tensor-product features for rigid-body pairs.
+"""Equivariant tensor-product features for rigid-body pairs.
 
-This module is diagnostic only and is not wired into MACE interactions.
+A physical orientation is one body-to-space rotation R in SO(3). Its absolute
+equivariant features are functions of the Wigner matrices D^ell(R).
 
-A rigid orientation matrix R is represented by its three body axes in the
-lab frame. Each axis transforms as an l=1 polar vector under proper global
-rotations, giving orientation irreps
+The generic full-frame path uses the complete D1(R), stored by e3nn as 3x1o:
+the body/Wigner index is multiplicity and the space index is the l=1 irrep.
 
-    3x1o.
-
-For an edge i -> j we construct
-
-    Y_l(rhat_ij) x frame_i x frame_j
-
-using full e3nn tensor products.
-
-Because FullTensorProduct retains every allowed Clebsch-Gordan path, this
-stage does not introduce a learned compression of the angular information.
+Those three multiplicity copies are constrained columns of one common
+rotation matrix, not independent physical vectors. C1, C2, and D6 features
+are likewise derived from one common R.
 """
 
 from __future__ import annotations
@@ -29,6 +22,7 @@ from mace.data.rigid_body import quaternion_to_matrix
 from mace.modules.rigid_c1 import C1_BODY_IRREPS, c1_body_irreducible_features
 from mace.modules.rigid_c2 import C2_BODY_IRREPS, c2_body_irreducible_features
 from mace.modules.rigid_d6 import D6_BODY_IRREPS, d6_body_features
+from mace.modules.rigid_wigner import full_wigner_features, full_wigner_irreps
 
 
 class RigidPairTensorProductFeatures(torch.nn.Module):
@@ -43,7 +37,7 @@ class RigidPairTensorProductFeatures(torch.nn.Module):
         self.lmax = lmax
 
         self.edge_irreps = o3.Irreps.spherical_harmonics(lmax)
-        self.frame_irreps = o3.Irreps("3x1o")
+        self.frame_irreps = full_wigner_irreps((1,))
 
         # First couple positional angular information to the center frame.
         self.edge_center_tp = o3.FullTensorProduct(
@@ -60,21 +54,14 @@ class RigidPairTensorProductFeatures(torch.nn.Module):
         self.irreps_out = self.pair_tp.irreps_out
 
     @staticmethod
-    def _frame_features(rotation_matrices: torch.Tensor) -> torch.Tensor:
-        """Convert rotation matrices to 3x1o body-axis features.
+    def _frame_features(
+        rotation_matrices: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return the complete D1(R) representation of one orientation."""
 
-        ``rotation_matrices[..., :, a]`` is body axis ``a`` expressed in
-        lab coordinates.
-
-        e3nn expects multiplicity-major layout
-
-            [axis_0_xyz, axis_1_xyz, axis_2_xyz],
-
-        hence the transpose before flattening.
-        """
-        return rotation_matrices.transpose(-1, -2).reshape(
-            *rotation_matrices.shape[:-2],
-            9,
+        return full_wigner_features(
+            rotation_matrices,
+            ells=(1,),
         )
 
     def forward(
