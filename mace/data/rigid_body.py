@@ -69,10 +69,7 @@ def infinitesimal_rotate_quaternions(
         dim=-1,
         keepdim=True,
     )
-    delta_v = 0.5 * (
-        w * rotation_vectors
-        + torch.cross(rotation_vectors, v, dim=-1)
-    )
+    delta_v = 0.5 * (w * rotation_vectors + torch.cross(rotation_vectors, v, dim=-1))
 
     return quaternions + torch.cat((delta_w, delta_v), dim=-1)
 
@@ -95,9 +92,15 @@ def infinitesimal_rotate_tensor(
 
     skew = torch.stack(
         (
-            zero, -z,    y,
-            z,     zero, -x,
-            -y,    x,    zero,
+            zero,
+            -z,
+            y,
+            z,
+            zero,
+            -x,
+            -y,
+            x,
+            zero,
         ),
         dim=-1,
     ).reshape(rotation_vectors.shape[:-1] + (3, 3))

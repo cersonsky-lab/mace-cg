@@ -291,9 +291,7 @@ class MACECalculator(Calculator):
                 )
 
                 if model_type == "MACE":
-                    self.implemented_properties.extend(
-                        ["torques_comm", "torques_var"]
-                    )
+                    self.implemented_properties.extend(["torques_comm", "torques_var"])
 
             if model_type in [
                 "DipoleMACE",

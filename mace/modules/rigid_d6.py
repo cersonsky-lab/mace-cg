@@ -12,10 +12,7 @@ from mace.modules.rigid_wigner import (
     wigner_body_template,
 )
 
-
-D6_BODY_IRREPS = o3.Irreps(
-    "1x2e + 1x6e"
-)
+D6_BODY_IRREPS = o3.Irreps("1x2e + 1x6e")
 
 
 def _hexagon_body_directions(
@@ -27,22 +24,14 @@ def _hexagon_body_directions(
         6,
         dtype=dtype,
         device=device,
-    ) * (
-        math.pi / 3.0
-    )
+    ) * (math.pi / 3.0)
 
-    zeros = torch.zeros_like(
-        angles
-    )
+    zeros = torch.zeros_like(angles)
 
     return torch.stack(
         (
-            torch.cos(
-                angles
-            ),
-            torch.sin(
-                angles
-            ),
+            torch.cos(angles),
+            torch.sin(angles),
             zeros,
         ),
         dim=-1,
@@ -84,9 +73,7 @@ def _d6_body_templates(
         body_hexagon,
         normalize=True,
         normalization="component",
-    ).mean(
-        dim=-2
-    )
+    ).mean(dim=-2)
 
     return (
         plane_template,
@@ -101,9 +88,7 @@ def d6_body_features_from_matrix(
         3,
         3,
     ):
-        raise ValueError(
-            "rotation must have shape (..., 3, 3)"
-        )
+        raise ValueError("rotation must have shape (..., 3, 3)")
 
     (
         plane_template,
@@ -137,10 +122,6 @@ def d6_body_features_from_matrix(
 def d6_body_features(
     quaternions: torch.Tensor,
 ) -> torch.Tensor:
-    rotation = quaternion_to_matrix(
-        quaternions
-    )
+    rotation = quaternion_to_matrix(quaternions)
 
-    return d6_body_features_from_matrix(
-        rotation
-    )
+    return d6_body_features_from_matrix(rotation)

@@ -312,7 +312,6 @@ def extract_config_mace_model(model: torch.nn.Module) -> Dict[str, Any]:
         "use_embedding_readout": (hasattr(model, "embedding_readout")),
         "readout_cls": model.readouts[-1].__class__,
         "cueq_config": model.cueq_config if hasattr(model, "cueq_config") else None,
-
         # Rigid-body architecture settings must survive model reconstruction.
         #
         # extract_model(), conversion utilities, and compiled-calculator paths
@@ -328,10 +327,7 @@ def extract_config_mace_model(model: torch.nn.Module) -> Dict[str, Any]:
         # backwards compatible.
         "rigid_feature_mode": getattr(model, "rigid_feature_mode", "none"),
         "rigid_pair_mode": getattr(model, "rigid_pair_mode", "none"),
-        "rigid_pair_multiplicity": int(
-            getattr(model, "rigid_pair_multiplicity", 1)
-        ),
-
+        "rigid_pair_multiplicity": int(getattr(model, "rigid_pair_multiplicity", 1)),
         "avg_num_neighbors": model.interactions[0].avg_num_neighbors,
         "atomic_numbers": model.atomic_numbers,
         "correlation": correlation,

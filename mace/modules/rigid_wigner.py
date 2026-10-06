@@ -10,9 +10,7 @@ def _parity_for_ell(
     ell: int,
 ) -> int:
     if ell < 0:
-        raise ValueError(
-            f"ell must be nonnegative, got {ell}"
-        )
+        raise ValueError(f"ell must be nonnegative, got {ell}")
 
     return -1 if ell % 2 else 1
 
@@ -29,10 +27,7 @@ def full_wigner_irreps(
     physical rotation, not independent vectors.
     """
 
-    ells = tuple(
-        int(ell)
-        for ell in ells
-    )
+    ells = tuple(int(ell) for ell in ells)
 
     return o3.Irreps(
         [
@@ -40,9 +35,7 @@ def full_wigner_irreps(
                 2 * ell + 1,
                 o3.Irrep(
                     ell,
-                    _parity_for_ell(
-                        ell
-                    ),
+                    _parity_for_ell(ell),
                 ),
             )
             for ell in ells
@@ -58,22 +51,15 @@ def wigner_matrix(
 
     if rotation.shape[-2:] != (3, 3):
         raise ValueError(
-            "rotation must have shape (..., 3, 3); "
-            f"got {tuple(rotation.shape)}"
+            "rotation must have shape (..., 3, 3); " f"got {tuple(rotation.shape)}"
         )
 
-    ell = int(
-        ell
-    )
+    ell = int(ell)
 
     return o3.Irrep(
         ell,
-        _parity_for_ell(
-            ell
-        ),
-    ).D_from_matrix(
-        rotation
-    )
+        _parity_for_ell(ell),
+    ).D_from_matrix(rotation)
 
 
 def full_wigner_features(
@@ -84,10 +70,7 @@ def full_wigner_features(
 
     blocks = []
 
-    for ell in tuple(
-        int(ell)
-        for ell in ells
-    ):
+    for ell in tuple(int(ell) for ell in ells):
         D = wigner_matrix(
             rotation,
             ell,
@@ -97,19 +80,11 @@ def full_wigner_features(
             D.transpose(
                 -1,
                 -2,
-            ).reshape(
-                rotation.shape[:-2]
-                + (
-                    (2 * ell + 1) ** 2,
-                )
-            )
+            ).reshape(rotation.shape[:-2] + ((2 * ell + 1) ** 2,))
         )
 
     if not blocks:
-        return rotation.new_empty(
-            rotation.shape[:-2]
-            + (0,)
-        )
+        return rotation.new_empty(rotation.shape[:-2] + (0,))
 
     return torch.cat(
         blocks,
@@ -124,17 +99,11 @@ def wigner_body_template(
 ) -> torch.Tensor:
     """Return D^ell(R) times one fixed body-frame irrep template."""
 
-    ell = int(
-        ell
-    )
+    ell = int(ell)
 
-    expected_dim = (
-        2 * ell + 1
-    )
+    expected_dim = 2 * ell + 1
 
-    if body_template.shape != (
-        expected_dim,
-    ):
+    if body_template.shape != (expected_dim,):
         raise ValueError(
             "body_template must have shape "
             f"({expected_dim},), "

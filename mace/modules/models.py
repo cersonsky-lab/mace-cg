@@ -354,21 +354,16 @@ class MACE(torch.nn.Module):
             edge_attrs_irreps = sh_irreps + self.rigid_pair_edge_embedding.edge_irreps
 
         elif self.rigid_pair_mode == "c1_frame":
-            self.rigid_pair_edge_embedding = (
-                RigidPairC1EdgeEmbedding(
-                    max_ell=max_ell,
-                    multiplicity=self.rigid_pair_multiplicity,
-                    edge_irreps=sh_irreps,
-                )
+            self.rigid_pair_edge_embedding = RigidPairC1EdgeEmbedding(
+                max_ell=max_ell,
+                multiplicity=self.rigid_pair_multiplicity,
+                edge_irreps=sh_irreps,
             )
 
             # Keep ordinary geometric SH and C1 rigid-pair
             # orientation features as independent equivariant
             # channels.
-            edge_attrs_irreps = (
-                sh_irreps
-                + self.rigid_pair_edge_embedding.edge_irreps
-            )
+            edge_attrs_irreps = sh_irreps + self.rigid_pair_edge_embedding.edge_irreps
 
         elif self.rigid_pair_mode == "c2_frame":
             self.rigid_pair_edge_embedding = RigidPairC2EdgeEmbedding(
@@ -582,9 +577,7 @@ class MACE(torch.nn.Module):
         lammps_class = interaction_kwargs.lammps_class
 
         if compute_torque and is_lammps:
-            raise ValueError(
-                "Torque autodiff is not supported in lammps_mliap mode"
-            )
+            raise ValueError("Torque autodiff is not supported in lammps_mliap mode")
 
         rotation_vectors = torch.zeros_like(positions)
         if compute_torque:
@@ -653,25 +646,17 @@ class MACE(torch.nn.Module):
                     rigid_tensor,
                     rotation_vectors,
                 )
-                rigid_tensor = rigid_tensor + (
-                    rotated_tensor - rotated_tensor.detach()
-                )
+                rigid_tensor = rigid_tensor + (rotated_tensor - rotated_tensor.detach())
 
                 if self.rigid_feature_mode == "electrostatic_quadrupole":
-                    rotated_irreps = quadrupole_tensor_to_irreps(
-                        rotated_tensor
-                    )
+                    rotated_irreps = quadrupole_tensor_to_irreps(rotated_tensor)
                 else:
-                    rotated_irreps = cartesian_tensor_to_irreps(
-                        rotated_tensor
-                    )
+                    rotated_irreps = cartesian_tensor_to_irreps(rotated_tensor)
 
                 # Same straight-through construction for the irreps:
                 # numerically use the original AtomicData value, but take
                 # d/dtheta from the freshly rotated representation.
-                rigid_irreps = rigid_irreps + (
-                    rotated_irreps - rotated_irreps.detach()
-                )
+                rigid_irreps = rigid_irreps + (rotated_irreps - rotated_irreps.detach())
 
             edge_invariant_tensor = rigid_tensor
             inertia_scalar = rigid_irreps[:, :1]
@@ -760,14 +745,8 @@ class MACE(torch.nn.Module):
         # Current pair-only models use radial features only, so this is
         # a no-op unless a serialized interaction structurally expects
         # the legacy wider input.
-        if (
-            not self.use_rigid_features
-            and self.use_rigid_pair_features
-        ):
-            first_edge_layer = (
-                self.interactions[0]
-                .conv_tp_weights[0]
-            )
+        if not self.use_rigid_features and self.use_rigid_pair_features:
+            first_edge_layer = self.interactions[0].conv_tp_weights[0]
 
             expected_edge_dim = getattr(
                 first_edge_layer,
@@ -783,29 +762,21 @@ class MACE(torch.nn.Module):
                 )
 
                 if weight is not None:
-                    expected_edge_dim = int(
-                        weight.shape[0]
-                    )
+                    expected_edge_dim = int(weight.shape[0])
 
             if expected_edge_dim is None:
                 raise RuntimeError(
-                    "cannot determine legacy interaction "
-                    "edge-feature width"
+                    "cannot determine legacy interaction " "edge-feature width"
                 )
 
-            expected_edge_dim = int(
-                expected_edge_dim
-            )
-            actual_edge_dim = int(
-                edge_feats.shape[-1]
-            )
+            expected_edge_dim = int(expected_edge_dim)
+            actual_edge_dim = int(edge_feats.shape[-1])
 
             if actual_edge_dim < expected_edge_dim:
                 edge_padding = torch.zeros(
                     (
                         edge_feats.shape[0],
-                        expected_edge_dim
-                        - actual_edge_dim,
+                        expected_edge_dim - actual_edge_dim,
                     ),
                     dtype=edge_feats.dtype,
                     device=edge_feats.device,
@@ -1020,9 +991,7 @@ class ScaleShiftMACE(MACE):
         lammps_class = interaction_kwargs.lammps_class
 
         if compute_torque and is_lammps:
-            raise ValueError(
-                "Torque autodiff is not supported in lammps_mliap mode"
-            )
+            raise ValueError("Torque autodiff is not supported in lammps_mliap mode")
 
         rotation_vectors = torch.zeros_like(positions)
         if compute_torque:
@@ -1092,25 +1061,17 @@ class ScaleShiftMACE(MACE):
                     rigid_tensor,
                     rotation_vectors,
                 )
-                rigid_tensor = rigid_tensor + (
-                    rotated_tensor - rotated_tensor.detach()
-                )
+                rigid_tensor = rigid_tensor + (rotated_tensor - rotated_tensor.detach())
 
                 if self.rigid_feature_mode == "electrostatic_quadrupole":
-                    rotated_irreps = quadrupole_tensor_to_irreps(
-                        rotated_tensor
-                    )
+                    rotated_irreps = quadrupole_tensor_to_irreps(rotated_tensor)
                 else:
-                    rotated_irreps = cartesian_tensor_to_irreps(
-                        rotated_tensor
-                    )
+                    rotated_irreps = cartesian_tensor_to_irreps(rotated_tensor)
 
                 # Same straight-through construction for the irreps:
                 # numerically use the original AtomicData value, but take
                 # d/dtheta from the freshly rotated representation.
-                rigid_irreps = rigid_irreps + (
-                    rotated_irreps - rotated_irreps.detach()
-                )
+                rigid_irreps = rigid_irreps + (rotated_irreps - rotated_irreps.detach())
 
             edge_invariant_tensor = rigid_tensor
             inertia_scalar = rigid_irreps[:, :1]
@@ -1199,14 +1160,8 @@ class ScaleShiftMACE(MACE):
         # Current pair-only models use radial features only, so this is
         # a no-op unless a serialized interaction structurally expects
         # the legacy wider input.
-        if (
-            not self.use_rigid_features
-            and self.use_rigid_pair_features
-        ):
-            first_edge_layer = (
-                self.interactions[0]
-                .conv_tp_weights[0]
-            )
+        if not self.use_rigid_features and self.use_rigid_pair_features:
+            first_edge_layer = self.interactions[0].conv_tp_weights[0]
 
             expected_edge_dim = getattr(
                 first_edge_layer,
@@ -1222,29 +1177,21 @@ class ScaleShiftMACE(MACE):
                 )
 
                 if weight is not None:
-                    expected_edge_dim = int(
-                        weight.shape[0]
-                    )
+                    expected_edge_dim = int(weight.shape[0])
 
             if expected_edge_dim is None:
                 raise RuntimeError(
-                    "cannot determine legacy interaction "
-                    "edge-feature width"
+                    "cannot determine legacy interaction " "edge-feature width"
                 )
 
-            expected_edge_dim = int(
-                expected_edge_dim
-            )
-            actual_edge_dim = int(
-                edge_feats.shape[-1]
-            )
+            expected_edge_dim = int(expected_edge_dim)
+            actual_edge_dim = int(edge_feats.shape[-1])
 
             if actual_edge_dim < expected_edge_dim:
                 edge_padding = torch.zeros(
                     (
                         edge_feats.shape[0],
-                        expected_edge_dim
-                        - actual_edge_dim,
+                        expected_edge_dim - actual_edge_dim,
                     ),
                     dtype=edge_feats.dtype,
                     device=edge_feats.device,

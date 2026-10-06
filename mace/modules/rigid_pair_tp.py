@@ -526,6 +526,7 @@ class RigidPairC2EdgeEmbedding(torch.nn.Module):
 
         return x
 
+
 class RigidPairC1EdgeEmbedding(torch.nn.Module):
     """Projected rigid-pair features for a generic C1 rigid molecule."""
 
@@ -568,10 +569,7 @@ class RigidPairC1EdgeEmbedding(torch.nn.Module):
             self.body_irreps,
         )
 
-        allowed_irreps = [
-            ir
-            for _, ir in self.sh_irreps
-        ]
+        allowed_irreps = [ir for _, ir in self.sh_irreps]
 
         self.pair_tp = o3.FullTensorProduct(
             self.edge_body_tp.irreps_out,

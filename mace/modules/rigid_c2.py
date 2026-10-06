@@ -14,10 +14,7 @@ from mace.modules.rigid_wigner import (
     wigner_body_template,
 )
 
-
-C2_BODY_IRREPS = o3.Irreps(
-    "1o + 2e"
-)
+C2_BODY_IRREPS = o3.Irreps("1o + 2e")
 
 
 def _validate_c2_axis(
@@ -28,10 +25,7 @@ def _validate_c2_axis(
         1,
         2,
     ):
-        raise ValueError(
-            "c2_axis must be one of 0, 1, or 2; "
-            f"got {c2_axis}"
-        )
+        raise ValueError("c2_axis must be one of 0, 1, or 2; " f"got {c2_axis}")
 
 
 def _c2_body_templates(
@@ -43,9 +37,7 @@ def _c2_body_templates(
     torch.Tensor,
     torch.Tensor,
 ]:
-    _validate_c2_axis(
-        c2_axis
-    )
+    _validate_c2_axis(c2_axis)
 
     eye = torch.eye(
         3,
@@ -53,11 +45,7 @@ def _c2_body_templates(
         device=device,
     )
 
-    transverse = [
-        i
-        for i in range(3)
-        if i != c2_axis
-    ]
+    transverse = [i for i in range(3) if i != c2_axis]
 
     l1_template = eye[
         :,
@@ -87,9 +75,7 @@ def _c2_body_templates(
             normalize=True,
             normalization="component",
         )
-    ) / math.sqrt(
-        2.0
-    )
+    ) / math.sqrt(2.0)
 
     return (
         l1_template,
@@ -103,9 +89,7 @@ def c2_body_irreducible_features(
 ) -> torch.Tensor:
     """Return compact C2-invariant, globally equivariant body features."""
 
-    _validate_c2_axis(
-        c2_axis
-    )
+    _validate_c2_axis(c2_axis)
 
     if rotation_matrices.shape[-2:] != (
         3,

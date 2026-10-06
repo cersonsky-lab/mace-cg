@@ -5,16 +5,13 @@ from mace.modules.rigid_wigner import (
     full_wigner_irreps,
 )
 
-
 C1_WIGNER_ELLS = (
     1,
     2,
     3,
 )
 
-C1_BODY_IRREPS = full_wigner_irreps(
-    C1_WIGNER_ELLS
-)
+C1_BODY_IRREPS = full_wigner_irreps(C1_WIGNER_ELLS)
 
 
 def c1_body_irreducible_features(
