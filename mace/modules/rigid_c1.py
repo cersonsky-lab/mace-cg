@@ -2,6 +2,7 @@ import torch
 from e3nn import o3
 from e3nn.o3._spherical_harmonics import _spherical_harmonics
 
+from mace.data.rigid_body import quaternion_to_matrix
 from mace.modules.rigid_wigner import (
     full_wigner_features,
     full_wigner_irreps,
@@ -158,6 +159,36 @@ class C1WignerFeatures(torch.nn.Module):
             ),
             dim=-1,
         )
+
+
+class C1BodyFeatures(torch.nn.Module):
+    """C1 rigid-body orientation features from scalar-first quaternions.
+
+    Formamide has no nontrivial proper rotational body symmetry, so the
+    complete proper orientation is retained as
+
+        D1(R) + D2(R) + D3(R),
+
+    with irreps
+
+        3x1o + 5x2e + 7x3o.
+
+    The quaternion is converted once to the common body-to-space
+    rotation R, and all Wigner features derive from that same R.
+    """
+
+    def __init__(self):
+        super().__init__()
+
+        self.wigner_features = C1WignerFeatures()
+
+    def forward(
+        self,
+        quaternions: torch.Tensor,
+    ) -> torch.Tensor:
+        rotations = quaternion_to_matrix(quaternions)
+
+        return self.wigner_features(rotations)
 
 
 def c1_body_irreducible_features(
