@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import List
 
 import torch
 from e3nn import o3
@@ -47,30 +48,33 @@ def wigner_matrix(
     rotation: torch.Tensor,
     ell: int,
 ) -> torch.Tensor:
-    """Return D^ell(R) for a body-to-space rotation R."""
+    """Return D^ell(R) for a proper body-to-space rotation R."""
 
-    if rotation.shape[-2:] != (3, 3):
-        raise ValueError(
-            "rotation must have shape (..., 3, 3); " f"got {tuple(rotation.shape)}"
-        )
+    if rotation.size(-2) != 3 or rotation.size(-1) != 3:
+        raise ValueError("rotation must have shape (..., 3, 3)")
 
-    ell = int(ell)
+    alpha, beta, gamma = o3.matrix_to_angles(rotation)
 
-    return o3.Irrep(
+    return o3.wigner_D(
         ell,
-        _parity_for_ell(ell),
-    ).D_from_matrix(rotation)
+        alpha,
+        beta,
+        gamma,
+    )
 
 
 def full_wigner_features(
     rotation: torch.Tensor,
-    ells: Iterable[int],
+    ells: List[int],
 ) -> torch.Tensor:
     """Pack complete Wigner-D matrices in multiplicity-major order."""
 
-    blocks = []
+    blocks = torch.jit.annotate(
+        List[torch.Tensor],
+        [],
+    )
 
-    for ell in tuple(int(ell) for ell in ells):
+    for ell in ells:
         D = wigner_matrix(
             rotation,
             ell,
@@ -80,11 +84,10 @@ def full_wigner_features(
             D.transpose(
                 -1,
                 -2,
-            ).reshape(rotation.shape[:-2] + ((2 * ell + 1) ** 2,))
+            ).flatten(
+                start_dim=-2,
+            )
         )
-
-    if not blocks:
-        return rotation.new_empty(rotation.shape[:-2] + (0,))
 
     return torch.cat(
         blocks,

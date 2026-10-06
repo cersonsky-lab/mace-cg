@@ -17,9 +17,10 @@ import math
 
 import torch
 from e3nn import o3
+from e3nn.o3._spherical_harmonics import _spherical_harmonics
 
 from mace.data.rigid_body import quaternion_to_matrix
-from mace.modules.rigid_c1 import C1_BODY_IRREPS, c1_body_irreducible_features
+from mace.modules.rigid_c1 import C1_BODY_IRREPS, C1WignerFeatures
 from mace.modules.rigid_c2 import C2_BODY_IRREPS, c2_body_irreducible_features
 from mace.modules.rigid_d6 import D6_BODY_IRREPS, d6_body_features
 from mace.modules.rigid_wigner import full_wigner_features, full_wigner_irreps
@@ -61,7 +62,9 @@ class RigidPairTensorProductFeatures(torch.nn.Module):
 
         return full_wigner_features(
             rotation_matrices,
-            ells=(1,),
+            ells=[
+                1,
+            ],
         )
 
     def forward(
@@ -535,7 +538,7 @@ class RigidPairC1EdgeEmbedding(torch.nn.Module):
         max_ell=None,
         multiplicity=1,
         lmax=None,
-        edge_irreps=None,
+        edge_irreps=C1_BODY_IRREPS,
         **kwargs,
     ):
         super().__init__()
@@ -555,6 +558,7 @@ class RigidPairC1EdgeEmbedding(torch.nn.Module):
         self.max_ell = int(max_ell)
         self.multiplicity = int(multiplicity)
         self.body_irreps = C1_BODY_IRREPS
+        self.body_features = C1WignerFeatures()
 
         # `edge_irreps` is the ordinary MACE spherical-harmonic
         # basis passed by models.py.  Keep it separate from the
@@ -600,15 +604,42 @@ class RigidPairC1EdgeEmbedding(torch.nn.Module):
     ):
         rotations = quaternion_to_matrix(quaternions)
 
-        body = c1_body_irreducible_features(
-            rotations,
+        body = self.body_features(rotations)
+
+        edge_norm = torch.linalg.vector_norm(
+            edge_vectors,
+            dim=-1,
+            keepdim=True,
         )
 
-        edge_sh = o3.spherical_harmonics(
-            self.sh_irreps,
-            edge_vectors,
-            normalize=True,
-            normalization="component",
+        directions = edge_vectors / edge_norm
+
+        edge_sh_raw = _spherical_harmonics(
+            self.max_ell,
+            directions[..., 0],
+            directions[..., 1],
+            directions[..., 2],
+        )
+
+        # The internal polynomial kernel in this e3nn version uses
+        # norm normalization. MACE's ordinary edge path uses
+        # normalization="component", so convert each ell block by
+        #
+        #     Y_component^ell = sqrt(2 ell + 1) Y_norm^ell.
+        #
+        # For max_ell=3 the contiguous blocks are:
+        #   ell=0: [0:1]
+        #   ell=1: [1:4]
+        #   ell=2: [4:9]
+        #   ell=3: [9:16]
+        edge_sh = torch.cat(
+            (
+                edge_sh_raw[..., 0:1],
+                edge_sh_raw[..., 1:4] * (3.0**0.5),
+                edge_sh_raw[..., 4:9] * (5.0**0.5),
+                edge_sh_raw[..., 9:16] * (7.0**0.5),
+            ),
+            dim=-1,
         )
 
         senders = edge_index[0]

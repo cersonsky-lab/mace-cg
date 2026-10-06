@@ -286,6 +286,7 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
             "full_frame_irrep_complete",
             "full_frame_raw",
             "invariant_radial",
+            "c1_frame",
             "c2_frame",
             "d6_frame",
         ),
