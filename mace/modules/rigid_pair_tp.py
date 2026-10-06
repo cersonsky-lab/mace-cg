@@ -26,6 +26,7 @@ import torch
 from e3nn import o3
 
 from mace.data.rigid_body import quaternion_to_matrix
+from mace.modules.rigid_c1 import C1_BODY_IRREPS, c1_body_irreducible_features
 from mace.modules.rigid_c2 import C2_BODY_IRREPS, c2_body_irreducible_features
 from mace.modules.rigid_d6 import D6_BODY_IRREPS, d6_body_features
 
@@ -323,6 +324,7 @@ class RigidPairRawEdgeEmbedding(torch.nn.Module):
 def validate_rigid_pair_mode(mode: str) -> str:
     """Validate the rigid-pair edge representation mode."""
     if mode in (
+        "c1_frame",
         "c2_frame",
         "d6_frame",
         "d6_frame_compact",
@@ -509,6 +511,113 @@ class RigidPairC2EdgeEmbedding(torch.nn.Module):
         body = c2_body_irreducible_features(
             rotations,
             c2_axis=self.c2_axis,
+        )
+
+        edge_sh = o3.spherical_harmonics(
+            self.sh_irreps,
+            edge_vectors,
+            normalize=True,
+            normalization="component",
+        )
+
+        senders = edge_index[0]
+        receivers = edge_index[1]
+
+        x = self.edge_body_tp(
+            edge_sh,
+            body[senders],
+        )
+
+        x = self.pair_tp(
+            x,
+            body[receivers],
+        )
+
+        x = self.projection(x)
+
+        if self.multiplicity > 1:
+            x = x / self.multiplicity**0.5
+
+        return x
+
+class RigidPairC1EdgeEmbedding(torch.nn.Module):
+    """Projected rigid-pair features for a generic C1 rigid molecule."""
+
+    def __init__(
+        self,
+        max_ell=None,
+        multiplicity=1,
+        lmax=None,
+        edge_irreps=None,
+        **kwargs,
+    ):
+        super().__init__()
+
+        if max_ell is None:
+            max_ell = lmax
+
+        if max_ell is None:
+            raise TypeError("max_ell/lmax must be provided")
+
+        if kwargs:
+            raise TypeError(f"Unexpected keyword arguments: {sorted(kwargs)}")
+
+        if multiplicity < 1:
+            raise ValueError("multiplicity must be >= 1")
+
+        self.max_ell = int(max_ell)
+        self.multiplicity = int(multiplicity)
+        self.body_irreps = C1_BODY_IRREPS
+
+        # `edge_irreps` is the ordinary MACE spherical-harmonic
+        # basis passed by models.py.  Keep it separate from the
+        # projected rigid-pair output irreps.
+        if edge_irreps is None:
+            self.sh_irreps = o3.Irreps.spherical_harmonics(self.max_ell)
+        else:
+            self.sh_irreps = o3.Irreps(edge_irreps)
+
+        self.edge_body_tp = o3.FullTensorProduct(
+            self.sh_irreps,
+            self.body_irreps,
+        )
+
+        allowed_irreps = [
+            ir
+            for _, ir in self.sh_irreps
+        ]
+
+        self.pair_tp = o3.FullTensorProduct(
+            self.edge_body_tp.irreps_out,
+            self.body_irreps,
+            filter_ir_out=allowed_irreps,
+        )
+
+        self.irreps_in = self.pair_tp.irreps_out
+
+        self.edge_irreps = o3.Irreps(
+            [(mul * self.multiplicity, ir) for mul, ir in self.sh_irreps]
+        )
+
+        self.irreps_out = self.edge_irreps
+
+        # Do not perturb initialization of the ordinary MACE path.
+        with torch.random.fork_rng(devices=[]):
+            self.projection = o3.Linear(
+                self.irreps_in,
+                self.irreps_out,
+            )
+
+    def forward(
+        self,
+        quaternions,
+        edge_index,
+        edge_vectors,
+    ):
+        rotations = quaternion_to_matrix(quaternions)
+
+        body = c1_body_irreducible_features(
+            rotations,
         )
 
         edge_sh = o3.spherical_harmonics(

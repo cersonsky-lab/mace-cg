@@ -24,6 +24,7 @@ from mace.modules.embeddings import GenericJointEmbedding
 from mace.modules.radial import ZBLBasis
 from mace.modules.rigid_pair_invariant import RigidPairInvariantRadialConditioning
 from mace.modules.rigid_pair_tp import (
+    RigidPairC1EdgeEmbedding,
     RigidPairC2EdgeEmbedding,
     RigidPairD6EdgeEmbedding,
     RigidPairEdgeEmbedding,
@@ -361,6 +362,23 @@ class MACE(torch.nn.Module):
             # Forward layout:
             #   [ordinary SH | rigid-pair SH]
             edge_attrs_irreps = sh_irreps + self.rigid_pair_edge_embedding.edge_irreps
+
+        elif self.rigid_pair_mode == "c1_frame":
+            self.rigid_pair_edge_embedding = (
+                RigidPairC1EdgeEmbedding(
+                    max_ell=max_ell,
+                    multiplicity=self.rigid_pair_multiplicity,
+                    edge_irreps=sh_irreps,
+                )
+            )
+
+            # Keep ordinary geometric SH and C1 rigid-pair
+            # orientation features as independent equivariant
+            # channels.
+            edge_attrs_irreps = (
+                sh_irreps
+                + self.rigid_pair_edge_embedding.edge_irreps
+            )
 
         elif self.rigid_pair_mode == "c2_frame":
             self.rigid_pair_edge_embedding = RigidPairC2EdgeEmbedding(
@@ -707,6 +725,7 @@ class MACE(torch.nn.Module):
                 "full_frame",
                 "full_frame_irrep_complete",
                 "full_frame_raw",
+                "c1_frame",
                 "c2_frame",
                 "d6_frame",
             ):
@@ -1148,6 +1167,7 @@ class ScaleShiftMACE(MACE):
                 "full_frame",
                 "full_frame_irrep_complete",
                 "full_frame_raw",
+                "c1_frame",
                 "c2_frame",
                 "d6_frame",
             ):
