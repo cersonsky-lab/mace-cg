@@ -267,6 +267,7 @@ def train(
             torch.distributed.barrier()
 
         # Validate
+        stop_training = False
         if epoch % eval_interval == 0:
             model_to_evaluate = (
                 model if distributed_model is None else distributed_model
@@ -329,6 +330,8 @@ def train(
                             )
                             if exit_now is not None:
                                 exit_now.fill_(1)
+                            else:
+                                stop_training = True
                     if save_all_checkpoints:
                         param_context = (
                             ema.average_parameters()
@@ -361,6 +364,8 @@ def train(
             if exit_now == 1:
                 break
 
+        if stop_training:
+            break
         epoch += 1
 
     logging.info("Training complete")
