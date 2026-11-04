@@ -450,6 +450,17 @@ class RigidPairD6EdgeEmbedding(RigidPairSymmetrizedEdgeEmbedding):
         )
 
 
+
+def c2_body_features_from_quaternions(
+    quaternions, *, c2_axis
+):
+    """Convert quaternions to matrices for C2 encoding."""
+    return c2_body_irreducible_features(
+        quaternion_to_matrix(quaternions),
+        c2_axis=c2_axis,
+    )
+
+
 class RigidPairC2EdgeEmbedding(RigidPairSymmetrizedEdgeEmbedding):
     """Projected rigid-pair features for a C2-symmetric molecule."""
 
@@ -468,7 +479,7 @@ class RigidPairC2EdgeEmbedding(RigidPairSymmetrizedEdgeEmbedding):
 
         self.c2_axis = int(c2_axis)
 
-        body_features = partial(c2_body_irreducible_features, c2_axis=self.c2_axis)
+        body_features = partial(c2_body_features_from_quaternions, c2_axis=self.c2_axis)
         super().__init__(
             C2_BODY_IRREPS,
             body_features,
