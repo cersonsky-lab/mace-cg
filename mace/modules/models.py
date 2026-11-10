@@ -26,10 +26,16 @@ from mace.modules.rigid_pair_invariant import RigidPairInvariantRadialConditioni
 from mace.modules.rigid_pair_tp import (
     RigidPairC1EdgeEmbedding,
     RigidPairC2EdgeEmbedding,
+    RigidPairCnEdgeEmbedding,
     RigidPairD6EdgeEmbedding,
+    RigidPairDnEdgeEmbedding,
     RigidPairEdgeEmbedding,
+    RigidPairIEdgeEmbedding,
     RigidPairIrrepCompleteEdgeEmbedding,
+    RigidPairOEdgeEmbedding,
     RigidPairRawEdgeEmbedding,
+    RigidPairTEdgeEmbedding,
+    parse_rigid_pair_mode,
     validate_rigid_pair_mode,
 )
 from mace.tools.scatter import scatter_mean, scatter_sum
@@ -396,6 +402,56 @@ class MACE(torch.nn.Module):
                 lmax=max_ell,
             )
 
+            edge_attrs_irreps = sh_irreps + self.rigid_pair_edge_embedding.edge_irreps
+
+        # -----------------------------------------------------------------
+        # Parameterised body-symmetry modes
+        # -----------------------------------------------------------------
+        elif self.rigid_pair_mode in ("t_frame", "o_frame", "i_frame"):
+            # Cubic and icosahedral chiral groups.
+            if self.rigid_pair_mode == "t_frame":
+                self.rigid_pair_edge_embedding = RigidPairTEdgeEmbedding(
+                    lmax=max_ell,
+                    edge_irreps=sh_irreps,
+                    multiplicity=self.rigid_pair_multiplicity,
+                )
+            elif self.rigid_pair_mode == "o_frame":
+                self.rigid_pair_edge_embedding = RigidPairOEdgeEmbedding(
+                    lmax=max_ell,
+                    edge_irreps=sh_irreps,
+                    multiplicity=self.rigid_pair_multiplicity,
+                )
+            else:  # i_frame
+                self.rigid_pair_edge_embedding = RigidPairIEdgeEmbedding(
+                    lmax=max_ell,
+                    edge_irreps=sh_irreps,
+                    multiplicity=self.rigid_pair_multiplicity,
+                )
+            edge_attrs_irreps = sh_irreps + self.rigid_pair_edge_embedding.edge_irreps
+
+        else:
+            # Parameterised Cn / Dn modes: "c{n}_frame" / "d{n}_frame"
+            # validate_rigid_pair_mode has already confirmed the string is valid.
+            kind, n = parse_rigid_pair_mode(self.rigid_pair_mode)
+            if kind == "cn":
+                self.rigid_pair_edge_embedding = RigidPairCnEdgeEmbedding(
+                    n=n,
+                    lmax=max_ell,
+                    edge_irreps=sh_irreps,
+                    multiplicity=self.rigid_pair_multiplicity,
+                )
+            elif kind == "dn":
+                self.rigid_pair_edge_embedding = RigidPairDnEdgeEmbedding(
+                    n=n,
+                    lmax=max_ell,
+                    edge_irreps=sh_irreps,
+                    multiplicity=self.rigid_pair_multiplicity,
+                )
+            else:
+                # Unreachable: validate_rigid_pair_mode would have raised.
+                raise AssertionError(
+                    f"Unhandled rigid_pair_mode in dispatch: {self.rigid_pair_mode!r}"
+                )
             edge_attrs_irreps = sh_irreps + self.rigid_pair_edge_embedding.edge_irreps
 
         self.edge_attrs_irreps = edge_attrs_irreps

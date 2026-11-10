@@ -7,13 +7,32 @@ The generic full-frame path uses the complete D1(R), stored by e3nn as 3x1o:
 the body/Wigner index is multiplicity and the space index is the l=1 irrep.
 
 Those three multiplicity copies are constrained columns of one common
-rotation matrix, not independent physical vectors. C1, C2, and D6 features
-are likewise derived from one common R.
+rotation matrix, not independent physical vectors. C1, C2, D6, Cn, Dn, T, O
+and I features are likewise derived from one common R.
+
+Supported rigid_pair_mode strings
+-----------------------------------
+Non-frame modes (no orientation used):
+    none, invariant_radial
+
+Full-frame modes (complete SO(3) orientation):
+    full_frame, full_frame_compact, full_frame_irrep_complete, full_frame_raw
+
+Body-symmetry modes — compact Wigner projections:
+    c1_frame        C1 (no body symmetry), 21-dim
+    c2_frame        C2 (legacy), 8-dim
+    c{n}_frame      Cn cyclic, n >= 2  (e.g. c3_frame → 3+7=10-dim)
+    d6_frame        D6 (legacy), 18-dim
+    d{n}_frame      Dn dihedral, n >= 2  (e.g. d3_frame → 5+7=12-dim)
+    t_frame         T chiral tetrahedral, 7-dim
+    o_frame         O chiral octahedral, 9-dim
+    i_frame         I chiral icosahedral, 13-dim
 """
 
 from __future__ import annotations
 
 import math
+import re
 from functools import partial
 
 import torch
@@ -23,8 +42,137 @@ from e3nn.o3._spherical_harmonics import _spherical_harmonics
 from mace.data.rigid_body import quaternion_to_matrix
 from mace.modules.rigid_c1 import C1_BODY_IRREPS, C1BodyFeatures
 from mace.modules.rigid_c2 import C2_BODY_IRREPS, c2_body_irreducible_features
+from mace.modules.rigid_cn import CnBodyFeatures, cn_body_irreps
+from mace.modules.rigid_cubic import (
+    IBodyFeatures,
+    I_BODY_IRREPS,
+    OBodyFeatures,
+    O_BODY_IRREPS,
+    TBodyFeatures,
+    T_BODY_IRREPS,
+)
 from mace.modules.rigid_d6 import D6_BODY_IRREPS, d6_body_features
+from mace.modules.rigid_dn import DnBodyFeatures, dn_body_irreps
 from mace.modules.rigid_wigner import full_wigner_features, full_wigner_irreps
+
+# ---------------------------------------------------------------------------
+# Compiled regex patterns for parameterised modes
+# ---------------------------------------------------------------------------
+
+_CN_RE = re.compile(r"^c(\d+)_frame$")
+_DN_RE = re.compile(r"^d(\d+)_frame$")
+
+
+class RigidPairPoseMLPEdgeEmbedding(torch.nn.Module):
+    """Global-SO(3)-invariant rigid-pair features via an MLP over pose descriptors.
+
+    Invariant descriptors (all invariant under simultaneous global SO(3) rotation):
+      - Flattened relative rotation matrix R_i^T R_j  (9 values)
+      - Edge vector in frame i: R_i^T r_{ij}          (3 values)
+      - Gaussian radial basis over |r_{ij}|            (num_radial values)
+
+    Parameters
+    ----------
+    r_max : float
+        Cutoff radius — sets the centre range of the Gaussian RBF.
+    num_radial : int
+        Number of Gaussian radial basis functions.
+    hidden_channels : int
+        Width of the hidden MLP layers.
+    out_channels : int
+        Number of output scalar features (``edge_irreps = out_channels x 0e``).
+    """
+
+    def __init__(
+        self,
+        r_max: float = 8.0,
+        num_radial: int = 16,
+        hidden_channels: int = 64,
+        out_channels: int = 32,
+    ) -> None:
+        super().__init__()
+        self.r_max = r_max
+        self.out_channels = out_channels
+        self.edge_irreps = o3.Irreps(f"{out_channels}x0e")
+        self.irreps_out = self.edge_irreps
+
+        centres = torch.linspace(0.0, float(r_max), num_radial)
+        self.register_buffer("_rbf_centres", centres)
+        self._rbf_width: float = float(r_max) / num_radial
+
+        in_dim = 9 + 3 + num_radial
+        self.mlp = torch.nn.Sequential(
+            torch.nn.Linear(in_dim, hidden_channels),
+            torch.nn.SiLU(),
+            torch.nn.Linear(hidden_channels, hidden_channels),
+            torch.nn.SiLU(),
+            torch.nn.Linear(hidden_channels, out_channels),
+        )
+
+    def forward(
+        self,
+        quaternions: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_vectors: torch.Tensor,
+    ) -> torch.Tensor:
+        src, dst = edge_index
+
+        R_i = quaternion_to_matrix(quaternions[dst])   # (E, 3, 3)
+        R_j = quaternion_to_matrix(quaternions[src])
+
+        # Relative rotation: R_i^T @ R_j  (invariant to global SO3)
+        R_rel = torch.einsum("eij,ejk->eik", R_i.transpose(-2, -1), R_j)
+        R_rel_flat = R_rel.reshape(R_rel.shape[0], 9)  # (E, 9)
+
+        # Edge vector expressed in frame i  (invariant to global SO3)
+        r_i = torch.einsum("eij,ej->ei", R_i.transpose(-2, -1), edge_vectors)  # (E, 3)
+
+        # Gaussian radial basis of |r|
+        d = edge_vectors.norm(dim=-1, keepdim=True)  # (E, 1)
+        centres = self._rbf_centres.to(dtype=d.dtype, device=d.device)
+        rbf = torch.exp(-0.5 * ((d - centres) / self._rbf_width) ** 2)  # (E, num_radial)
+
+        x = torch.cat([R_rel_flat, r_i, rbf], dim=-1)
+        return self.mlp(x.to(dtype=self.mlp[0].weight.dtype))
+
+
+# ---------------------------------------------------------------------------
+# Mode parsing helper (Python-only; used in MACE.__init__, not in forward)
+# ---------------------------------------------------------------------------
+
+
+def parse_rigid_pair_mode(mode: str) -> tuple[str, int]:
+    """Parse a parameterised rigid-pair mode string.
+
+    Returns ``(kind, n)`` where ``kind`` is one of ``"cn"``, ``"dn"``,
+    ``"t"``, ``"o"``, ``"i"``, or the original ``mode`` string for
+    non-parameterised modes, and ``n`` is the integer order (0 for
+    non-parameterised groups).
+
+    Examples
+    --------
+    >>> parse_rigid_pair_mode("c3_frame")
+    ("cn", 3)
+    >>> parse_rigid_pair_mode("d4_frame")
+    ("dn", 4)
+    >>> parse_rigid_pair_mode("t_frame")
+    ("t", 0)
+    >>> parse_rigid_pair_mode("d6_frame")
+    ("d6_frame", 0)   # legacy, handled by its own branch
+    """
+    m = _CN_RE.match(mode)
+    if m:
+        return "cn", int(m.group(1))
+    m = _DN_RE.match(mode)
+    if m:
+        return "dn", int(m.group(1))
+    if mode == "t_frame":
+        return "t", 0
+    if mode == "o_frame":
+        return "o", 0
+    if mode == "i_frame":
+        return "i", 0
+    return mode, 0
 
 
 class RigidPairTensorProductFeatures(torch.nn.Module):
@@ -313,33 +461,79 @@ class RigidPairRawEdgeEmbedding(torch.nn.Module):
 
 
 def validate_rigid_pair_mode(mode: str) -> str:
-    """Validate the rigid-pair edge representation mode."""
-    if mode in (
-        "c1_frame",
-        "c2_frame",
-        "d6_frame",
-    ):
+    """Validate *and* return the rigid-pair edge representation mode.
+
+    Accepted modes
+    --------------
+    Non-frame modes (no orientation used):
+        none, invariant_radial
+
+    Full-frame modes (complete SO(3) orientation):
+        full_frame, full_frame_compact, full_frame_irrep_complete, full_frame_raw
+
+    Body-symmetry modes — compact Wigner projections:
+        c1_frame        C1 (no body symmetry), 21-dim
+        c2_frame        C2 (legacy), 8-dim
+        c{n}_frame      Cn cyclic, n >= 2  (e.g. c3_frame)
+        d6_frame        D6 (legacy), 18-dim
+        d{n}_frame      Dn dihedral, n >= 2  (e.g. d3_frame)
+        t_frame         T chiral tetrahedral, 7-dim
+        o_frame         O chiral octahedral, 9-dim
+        i_frame         I chiral icosahedral, 13-dim
+    """
+    # Legacy exact-match modes
+    if mode in ("c1_frame", "c2_frame", "d6_frame"):
         return mode
-    valid_modes = {
+
+    # Non-frame modes
+    _OTHER_VALID = {
         "none",
         "full_frame",
         "full_frame_compact",
         "full_frame_irrep_complete",
         "full_frame_raw",
         "invariant_radial",
+        "pose_mlp",
     }
+    if mode in _OTHER_VALID:
+        return mode
 
-    if mode not in valid_modes:
-        raise ValueError(
-            f"Unknown rigid_pair_mode={mode!r}. "
-            f"Expected one of {sorted(valid_modes)}."
-        )
+    # Cubic / icosahedral
+    if mode in ("t_frame", "o_frame", "i_frame"):
+        return mode
 
-    return mode
+    # Parameterised cyclic: c{n}_frame (n >= 2)
+    m_cn = _CN_RE.match(mode)
+    if m_cn:
+        n = int(m_cn.group(1))
+        if n < 2:
+            raise ValueError(
+                f"Cn symmetry requires n >= 2; got {mode!r} (n={n})."
+            )
+        return mode
+
+    # Parameterised dihedral: d{n}_frame (n >= 2)
+    m_dn = _DN_RE.match(mode)
+    if m_dn:
+        n = int(m_dn.group(1))
+        if n < 2:
+            raise ValueError(
+                f"Dn symmetry requires n >= 2; got {mode!r} (n={n})."
+            )
+        return mode
+
+    raise ValueError(
+        f"Unknown rigid_pair_mode={mode!r}. "
+        "Valid modes: none, full_frame, full_frame_compact, "
+        "full_frame_irrep_complete, full_frame_raw, invariant_radial, "
+        "c1_frame, c2_frame, c{n}_frame (n>=2), "
+        "d6_frame, d{n}_frame (n>=2), "
+        "t_frame, o_frame, i_frame."
+    )
 
 
 class RigidPairSymmetrizedEdgeEmbedding(torch.nn.Module):
-    """Projected rigid-pair features for a D6-symmetric molecule."""
+    """Projected rigid-pair features for a body-symmetry–constrained molecule."""
 
     def __init__(
         self,
@@ -428,6 +622,11 @@ class RigidPairSymmetrizedEdgeEmbedding(torch.nn.Module):
         return x
 
 
+# ---------------------------------------------------------------------------
+# Legacy named symmetry classes (unchanged from original)
+# ---------------------------------------------------------------------------
+
+
 class RigidPairD6EdgeEmbedding(RigidPairSymmetrizedEdgeEmbedding):
     """Projected rigid-pair features for a D6-symmetric molecule."""
 
@@ -448,7 +647,6 @@ class RigidPairD6EdgeEmbedding(RigidPairSymmetrizedEdgeEmbedding):
             edge_irreps,
             **kwargs,
         )
-
 
 
 def c2_body_features_from_quaternions(
@@ -505,6 +703,138 @@ class RigidPairC1EdgeEmbedding(RigidPairSymmetrizedEdgeEmbedding):
         super().__init__(
             C1_BODY_IRREPS,
             C1BodyFeatures(),
+            max_ell,
+            multiplicity,
+            lmax,
+            edge_irreps,
+            **kwargs,
+        )
+
+
+# ---------------------------------------------------------------------------
+# New parameterised symmetry classes
+# ---------------------------------------------------------------------------
+
+
+class RigidPairCnEdgeEmbedding(RigidPairSymmetrizedEdgeEmbedding):
+    """Projected rigid-pair features for a Cn-symmetric molecule.
+
+    Parameters
+    ----------
+    n : int
+        Cyclic order (n >= 2).  ``"c3_frame"`` → n=3, etc.
+
+    Note: ``n=2`` uses a different l=2 template than the legacy
+    ``c2_frame`` mode; for backward compat use ``c2_frame``.
+    """
+
+    def __init__(
+        self,
+        n: int,
+        max_ell=None,
+        multiplicity: int = 1,
+        lmax=None,
+        edge_irreps=None,
+        **kwargs,
+    ):
+        super().__init__(
+            cn_body_irreps(n),
+            CnBodyFeatures(n),
+            max_ell,
+            multiplicity,
+            lmax,
+            edge_irreps,
+            **kwargs,
+        )
+
+
+class RigidPairDnEdgeEmbedding(RigidPairSymmetrizedEdgeEmbedding):
+    """Projected rigid-pair features for a Dn-symmetric molecule.
+
+    Parameters
+    ----------
+    n : int
+        Dihedral order (n >= 2).  ``"d3_frame"`` → n=3, etc.
+    """
+
+    def __init__(
+        self,
+        n: int,
+        max_ell=None,
+        multiplicity: int = 1,
+        lmax=None,
+        edge_irreps=None,
+        **kwargs,
+    ):
+        super().__init__(
+            dn_body_irreps(n),
+            DnBodyFeatures(n),
+            max_ell,
+            multiplicity,
+            lmax,
+            edge_irreps,
+            **kwargs,
+        )
+
+
+class RigidPairTEdgeEmbedding(RigidPairSymmetrizedEdgeEmbedding):
+    """Projected rigid-pair features for a T-symmetric (chiral tetrahedral) molecule."""
+
+    def __init__(
+        self,
+        max_ell=None,
+        multiplicity: int = 1,
+        lmax=None,
+        edge_irreps=None,
+        **kwargs,
+    ):
+        super().__init__(
+            T_BODY_IRREPS,
+            TBodyFeatures(),
+            max_ell,
+            multiplicity,
+            lmax,
+            edge_irreps,
+            **kwargs,
+        )
+
+
+class RigidPairOEdgeEmbedding(RigidPairSymmetrizedEdgeEmbedding):
+    """Projected rigid-pair features for an O-symmetric (chiral octahedral) molecule."""
+
+    def __init__(
+        self,
+        max_ell=None,
+        multiplicity: int = 1,
+        lmax=None,
+        edge_irreps=None,
+        **kwargs,
+    ):
+        super().__init__(
+            O_BODY_IRREPS,
+            OBodyFeatures(),
+            max_ell,
+            multiplicity,
+            lmax,
+            edge_irreps,
+            **kwargs,
+        )
+
+
+class RigidPairIEdgeEmbedding(RigidPairSymmetrizedEdgeEmbedding):
+    """Projected rigid-pair features for an I-symmetric (chiral icosahedral) molecule."""
+
+    def __init__(
+        self,
+        max_ell=None,
+        multiplicity: int = 1,
+        lmax=None,
+        edge_irreps=None,
+        **kwargs,
+    ):
+        super().__init__(
+            I_BODY_IRREPS,
+            IBodyFeatures(),
             max_ell,
             multiplicity,
             lmax,
