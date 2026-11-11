@@ -27,6 +27,9 @@ from __future__ import annotations
 import torch
 from e3nn.io import CartesianTensor
 
+# Built once at import time; Clebsch-Gordan construction is expensive.
+_SYMMETRIC_RANK2_CONVERTER = CartesianTensor("ij=ji")
+
 
 def quaternion_to_matrix(q: torch.Tensor, eps: float = 1.0e-12) -> torch.Tensor:
     q = q / torch.clamp(torch.linalg.vector_norm(q, dim=-1, keepdim=True), min=eps)
@@ -189,7 +192,7 @@ def quadrupole_tensor_to_irreps(
     norm = torch.linalg.matrix_norm(traceless, ord="fro", dim=(-2, -1))
     normalized = traceless / norm.clamp_min(eps)[..., None, None]
 
-    converter = CartesianTensor("ij=ji")
+    converter = _SYMMETRIC_RANK2_CONVERTER
     irreps = converter.from_cartesian(normalized)
     irreps = irreps.clone()
     irreps[..., :1] = norm[..., None]
@@ -224,7 +227,7 @@ def cartesian_tensor_to_irreps(
 
     normalized_tensor = tensor / trace.clamp_min(eps)[..., None, None]
 
-    converter = CartesianTensor("ij=ji")
+    converter = _SYMMETRIC_RANK2_CONVERTER
     return converter.from_cartesian(normalized_tensor)
 
 
